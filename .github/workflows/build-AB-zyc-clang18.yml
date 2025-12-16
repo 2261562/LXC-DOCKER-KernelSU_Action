@@ -61,13 +61,12 @@ jobs:
     - name: 添加runc补丁
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        wget https://github.com/fate-think/LXC-DOCKER-KernelSU_Action/releases/download/1.0.0/runcpatch.sh
-        chmod a+x runcpatch.sh
+        chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
         if [ -f android-kernel/kernel/cgroup.c ]; then
-        ./runcpatch.sh android-kernel/kernel/cgroup.c               
+        $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c               
         fi
         if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
-        ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
     
     - name: 修复clang18部分
