@@ -29,14 +29,14 @@ jobs:
     - name: 构建编译内核环境
       run: |
         sudo apt-get update
-        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3  binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 切换python2.7
+    - name: 切换.7
       if: env.SWITCH_PYTHON == 'true'
       run: |
        sudo rm -f /usr/bin/python
-       sudo ln -s /usr/bin/python2.7 /usr/bin/python
+       sudo ln -s /usr/bin/.7 /usr/bin/python
                      
     - name: 下载 阿菌未霜 clang 编译器
       run: |
