@@ -95,11 +95,11 @@ jobs:
         # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 编译命令 (使用最稳妥的参数)
-        # 强制使用 GNU 的交叉编译工具链 (binutils) 处理汇编和链接
-        # 仅使用 Clang 编译 C 代码
+        # 编译命令 (关键修改：添加 -no-integrated-as)
+        # 这会强制 Clang 使用 binutils-aarch64-linux-gnu 中的 'as' 汇编器
+        # 从而完美解决 kernel/bounds.c 和 devicetable-offsets.s 的报错
         make -j$(nproc --all) \
-            CC="ccache clang" \
+            CC="ccache clang -no-integrated-as" \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE="aarch64-linux-gnu-" \
