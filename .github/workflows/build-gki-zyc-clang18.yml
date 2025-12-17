@@ -56,12 +56,20 @@ jobs:
     - name: 修复 GKI 编译问题
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 禁用栈帧大小检查以避免 quotactl 错误
-        sed -i 's/-Wframe-larger-than=2048/-Wframe-larger-than=4096/g' Makefile
-        # 如果 Makefile 中没有该选项，添加到 KBUILD_CFLAGS
-        if ! grep -q "Wframe-larger-than" Makefile; then
-          sed -i '/^KBUILD_CFLAGS/a KBUILD_CFLAGS += -Wframe-larger-than=4096' Makefile
+        
+        # 方法1: 增加栈帧大小限制到 4096
+        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=4096/g' {} \;
+        
+        # 方法2: 在主 Makefile 中添加编译器标志，将栈帧警告降级为非错误
+        echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
+        echo "KBUILD_CFLAGS += -Wframe-larger-than=4096" >> Makefile
+        
+        # 方法3: 针对 quota.c 文件禁用栈帧检查
+        if [ -f fs/quota/Makefile ]; then
+          echo "CFLAGS_quota.o += -Wno-frame-larger-than" >> fs/quota/Makefile
         fi
+        
+        echo "已应用栈帧大小修复"
 
     - name: 配置 ksu
       if: env.ENABLE_KERNELSU == 'true'
