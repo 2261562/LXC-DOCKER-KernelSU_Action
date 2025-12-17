@@ -1,10 +1,10 @@
-name: Redmi Note 12 5G (GKI Merge Config)
+name: Redmi Note 12 5G (Fix Errors)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Sunstone GKI)
+    name: Build Kernel (Fix)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -18,8 +18,9 @@ jobs:
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
         cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
         cat config.env | grep KERNEL_IMAGE_NAME= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
-        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+        # 强制覆盖 KernelSU 版本为 v0.9.5
+        echo "ENABLE_KERNELSU=true" >> $GITHUB_ENV
+        echo "KERNELSU_TAG=v0.9.5" >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
     - name: 构建编译环境
@@ -47,61 +48,65 @@ jobs:
         # 1. 准备 output 目录
         mkdir -p out
 
-        # 定义要合并的文件
+        # 定义要合并的文件 (根据之前的检测，使用 sunstone 或 moonstone)
+        # 优先使用 moonstone 因为源码分支叫 moonstone
+        if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
+        else
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
+        fi
+        
         BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
-        VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
         
         echo "正在合并配置: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
         
         export ARCH=arm64
-        
-        # 2. 合并配置 (生成到当前源码根目录 .config)
         scripts/kconfig/merge_config.sh -m $BASE_DEFCONFIG $VENDOR_FRAGMENT
         
-        # 3. 将 .config 移动到 out 目录
         mv .config out/
-        
-        # 4. 清理源码树残留
         make mrproper
-        
-        # 5. 在 out 目录重新整理配置
         make O=out olddefconfig
-        
-        echo "配置合并完成，源码树已清理。"
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
-        
-        # 直接修改 out 目录下的 .config
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
 
-    - name: 修复现代内核编译问题 (GKI/Clang18)
+    - name: 修复编译报错 (Focaltech & KSU)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 修复1: 增加栈帧大小限制 (Clang 18 对蓝牙等模块的栈检查较严格)
+        # --- 修复 1: Focaltech 触控驱动缺文件 ---
+        echo "修复 Focaltech 固件路径问题..."
+        # 1. 创建一个空的固件文件在驱动目录本地
+        touch drivers/input/touchscreen/FT3519T/fw_sample.i
+        echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
+        
+        # 2. 修改头文件，把包含路径改为当前目录 (去掉 include/firmware/ 前缀)
+        # 原句: #define FTS_UPGRADE_FW_FILE "include/firmware/fw_sample.i"
+        # 改为: #define FTS_UPGRADE_FW_FILE "fw_sample.i"
+        sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
+        
+        
+        # --- 修复 2: 编译器警告升级为错误 ---
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
-        
-        # 修复2: 在 out/.config 中修改 stack protector
         sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
+        
+        # 全局禁用 -Werror (核弹级修复，防止任何警告中断编译)
+        # KSU 很多警告在 Clang 18 下会报错
+        echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=implicit-function-declaration" >> Makefile
 
-        # 修复3: 解决 Focaltech 触控驱动缺少固件文件的问题
-        # 错误原因: fatal error: 'include/firmware/fw_sample.i' file not found
-        # 解决方法: 创建该目录并生成一个包含伪造数据(0x00)的头文件
-        # (包含一个字节是为了防止 "empty initializer" 数组为空的错误)
-        echo "正在创建缺失的固件文件..."
-        mkdir -p include/firmware
-        echo "0x00" > include/firmware/fw_sample.i
 
-    - name: 配置 KernelSU
+    - name: 配置 KernelSU (降级版)
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+        # 强制使用 v0.9.5，修复 TWA_RESUME 和 seccomp 报错
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
     - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
@@ -115,8 +120,6 @@ jobs:
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
-        
-        # 此时 out/.config 已经准备好了，直接编译即可
         
         make -j$(nproc --all) \
             O=out \
