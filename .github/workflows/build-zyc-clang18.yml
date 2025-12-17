@@ -40,7 +40,7 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
     
-    - name: ⚙️ 合并 GKI 配置文件 (修复版)
+    - name: ⚙️ 合并 GKI 配置文件
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -58,10 +58,10 @@ jobs:
         # 2. 合并配置 (生成到当前源码根目录 .config)
         scripts/kconfig/merge_config.sh -m $BASE_DEFCONFIG $VENDOR_FRAGMENT
         
-        # 3. 【关键】将 .config 移动到 out 目录
+        # 3. 将 .config 移动到 out 目录
         mv .config out/
         
-        # 4. 【关键】清理源码树残留，解决 "source tree is not clean" 报错
+        # 4. 清理源码树残留
         make mrproper
         
         # 5. 在 out 目录重新整理配置
@@ -81,11 +81,21 @@ jobs:
     - name: 修复现代内核编译问题 (GKI/Clang18)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 修复1: 增加栈帧大小限制 (Clang 18 对蓝牙等模块的栈检查较严格)
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
         
-        # 在 out/.config 中修改 stack protector
+        # 修复2: 在 out/.config 中修改 stack protector
         sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
+
+        # 修复3: 解决 Focaltech 触控驱动缺少固件文件的问题
+        # 错误原因: fatal error: 'include/firmware/fw_sample.i' file not found
+        # 解决方法: 创建该目录并生成一个包含伪造数据(0x00)的头文件
+        # (包含一个字节是为了防止 "empty initializer" 数组为空的错误)
+        echo "正在创建缺失的固件文件..."
+        mkdir -p include/firmware
+        echo "0x00" > include/firmware/fw_sample.i
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
