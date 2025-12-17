@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (Fix WiFi v2)
+name: 老旧设备 GCC 4.9 (LineageOS + msm8953)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (GCC 4.9 v2)
+    name: Build Kernel (Fix WiFi Final)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -13,15 +13,14 @@ jobs:
     
     - name: 环境变量配置
       run: |
-        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
+        # 只读取部分通用配置
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
-        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
+        
+        # ⚠️ 直接指定配置为 msm8953_defconfig (适用于 sakura)
+        echo "KERNEL_CONFIG=msm8953_defconfig" >> $GITHUB_ENV
 
     - name: 构建编译环境
       run: |
@@ -36,11 +35,13 @@ jobs:
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
-    - name: 下载内核源码
+    - name: 下载内核源码 (LineageOS)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
-                  
+        echo "正在下载 LineageOS 源码..."
+        # 强制使用 lineage-16.0 分支
+        git clone https://github.com/LineageOS/android_kernel_xiaomi_msm8953 -b lineage-16.0 android-kernel --depth=1
+
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
@@ -48,6 +49,10 @@ jobs:
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        
+        # ⚠️ 强制写入 WiFi 模块配置 (确保 msm8953_defconfig 开启了模块)
+        echo "CONFIG_QCA_CLD_WLAN=m" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "CONFIG_QCACLD_WLAN_LMO=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
     - name: 补丁与修复 (Runc/GCC/DTC)
       run: |
@@ -57,7 +62,6 @@ jobs:
         chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
         if [ -f android-kernel/kernel/cgroup.c ]; then
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c
-            # Linux 4.9 手动注入 struct 定义
             sed -i '/#include <linux\/cgroup.h>/a struct cgroup_namespace { atomic_t count; struct cgroup_root *root; };' android-kernel/kernel/cgroup.c
         fi
 
@@ -87,7 +91,7 @@ jobs:
     - name: 设置 ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-redmi6pro-gcc49
+        key: build-kernel-redmi6pro-lineageos
         max-size: 2G
 
     - name: 开始编译 (内核 + 模块)
@@ -99,8 +103,7 @@ jobs:
         # 1. 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 2. 尝试强制开启模块支持 (如果不开启，make modules 不会产出任何东西)
-        # 很多老设备默认没有 CONFIG_MODULES=y
+        # 2. 强制开启模块支持
         cd out
         echo "CONFIG_MODULES=y" >> .config
         echo "CONFIG_MODULE_UNLOAD=y" >> .config
@@ -108,7 +111,6 @@ jobs:
         make O=out ARCH=arm64 olddefconfig
         
         # 3. 编译内核与模块
-        # 使用绝对路径 INSTALL_MOD_PATH 避免路径错误
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -143,14 +145,15 @@ jobs:
             cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
         fi
         
-        # 2. 复制模块 (带容错判断)
+        # 2. 复制模块
         if [ -d "modules_install" ]; then
             echo "发现模块目录，正在打包..."
             mkdir -p AnyKernel3/modules/vendor/lib/modules
             find modules_install -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+            echo "=== 检查 WiFi 驱动 ==="
+            find AnyKernel3/modules/vendor/lib/modules/ -name "*wlan*"
         else
-            echo "警告: 未发现 modules_install 目录，说明本次编译没有生成模块。"
-            echo "如果是老旧设备，这可能是正常的 (所有驱动都 built-in 了)。"
+            echo "严重警告: 未发现 modules_install 目录！"
         fi
         
         rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/patch
