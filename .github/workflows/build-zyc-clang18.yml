@@ -60,16 +60,34 @@ jobs:
         if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
-    
-    - name: 修复clang18兼容性 (针对老内核)
+
+    - name: 修复clang18兼容性 (手动修复)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 禁用 Strong Stack Protector，老内核配合新 Clang 容易报错
+        
+        # 1. 禁用 Stack Protector Strong (老内核不支持新版 Clang 的此特性)
         sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        # 下载通用的 Clang 修复脚本
-        wget https://github.com/fate-think/LXC-DOCKER-KernelSU_Action/releases/download/v3.0.0-stable/clangfix3.sh
-        chmod u+x clangfix3.sh
-        ./clangfix3.sh        
+        
+        # 2. 修复 DTC (Device Tree Compiler) 兼容性问题
+        # 新版 host 环境(Ubuntu 22.04+) 容易报 yylloc 多重定义错误
+        if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+            sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
+        fi
+        
+        # 3. 屏蔽 -Werror (将警告视为错误)
+        # 老内核在新编译器下会有大量警告，导致编译立刻中断
+        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
+        sed -i 's/-Werror//g' Makefile
+        
+        # 4. 修复 gcc-wrapper.py (如果存在)
+        # 这个脚本会拦截警告并报错，强制让它通过
+        if [ -f scripts/gcc-wrapper.py ]; then
+            chmod +x scripts/gcc-wrapper.py
+            sed -i 's/return code != 0/return code != 0 and False/g' scripts/gcc-wrapper.py
+        fi
+
+        # 5. 确保 scripts 目录下的工具可执行 (防止权限问题)
+        chmod +x scripts/* 2>/dev/null || true     
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
