@@ -1,4 +1,4 @@
-name: 老旧设备 Zyc Clang 18
+name: 老旧设备 Zyc Clang 12
 on:
   workflow_dispatch:
 
