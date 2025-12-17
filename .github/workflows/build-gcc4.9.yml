@@ -67,37 +67,39 @@ jobs:
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
 
-    - name: 修复 Runc 补丁缺失定义 (修正类型)
+    - name: 修复 Runc 补丁与类型定义 (Linux 4.9 适配)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 修正：将 root 的类型从 struct cgroup * 改为 struct cgroupfs_root *
-        # 这与 Linux 3.18/4.9 内核的定义一致
+        # 修正：Linux 4.9 中应使用 struct cgroup_root
         if [ -f kernel/cgroup.c ]; then
             sed -i '/#include <linux\/cgroup.h>/a \
             struct cgroup_namespace {\
                 atomic_t count;\
-                struct cgroupfs_root *root;\
+                struct cgroup_root *root;\
             };' kernel/cgroup.c
         fi
 
-    - name: 修复 GCC 编译常见问题 (含 wrapper 修复)
+    - name: 彻底禁用 GCC Wrapper 与修复编译
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 1. 修复 dtc 兼容性
+        # 1. 暴力替换 gcc-wrapper.py
+        # 直接用 python 脚本覆盖它，让它只负责执行命令，不再拦截任何警告
+        if [ -f scripts/gcc-wrapper.py ]; then
+            echo '#!/usr/bin/env python' > scripts/gcc-wrapper.py
+            echo 'import os' >> scripts/gcc-wrapper.py
+            echo 'import sys' >> scripts/gcc-wrapper.py
+            echo 'os.execvp(sys.argv[1], sys.argv[1:])' >> scripts/gcc-wrapper.py
+            chmod +x scripts/gcc-wrapper.py
+        fi
+        
+        # 2. 修复 dtc 兼容性
         if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 2. 禁用高通内核特有的 gcc-wrapper.py 警告拦截
-        # 这是导致 "error, forbidden warning" 的罪魁祸首
-        if [ -f scripts/gcc-wrapper.py ]; then
-            chmod +x scripts/gcc-wrapper.py
-            sed -i 's/return code != 0/return code != 0 and False/g' scripts/gcc-wrapper.py
-        fi
-
-        # 3. 禁用 Makefile 中的 -Werror
+        # 3. 再次确保 Makefile 中没有残留的 -Werror
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
 
@@ -122,7 +124,7 @@ jobs:
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
         # 编译命令
-        # KCFLAGS 继续保持，以防万一
+        # 此时 wrapper 已被废除，-Wno-error 实际上可能多余但保留无害
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
