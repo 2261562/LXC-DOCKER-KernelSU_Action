@@ -1,10 +1,10 @@
-name: Redmi Note 12 5G (Fix Errors v4)
+name: Redmi Note 12 5G (Fix Errors v5)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix v4)
+    name: Build Kernel (Fix v5)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -69,7 +69,7 @@ jobs:
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
 
-    - name: 修复编译报错 (All-in-One)
+    - name: 修复编译报错 (All-in-One v5)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -95,9 +95,11 @@ jobs:
         echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=implicit-function-declaration" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=implicit-int" >> Makefile
-        
-        # 4.3: 新增 - 禁用 strict-prototypes (本次报错修复)
         echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
+        
+        # 4.3: 新增 - 禁用 unused 变量报错 (本次修复)
+        echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=unused-variable" >> Makefile
         
         # 5. 修改 stack protector
         sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
