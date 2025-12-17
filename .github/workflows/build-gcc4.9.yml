@@ -38,9 +38,6 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # 关键修改：将分支 tag 从 android-10... 改为 android-9.0.0_r61
-        # 这是包含真实 GCC 二进制文件的最后一个稳定版本
-        
         # 下载 64位 GCC 4.9
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         
@@ -71,6 +68,20 @@ jobs:
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
 
+    - name: 修复 Runc 补丁缺失定义 (关键修复)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 在 kernel/cgroup.c 头部插入缺失的 struct cgroup_namespace 定义
+        # 必须定义在 include 之后，代码使用之前
+        if [ -f kernel/cgroup.c ]; then
+            sed -i '/#include <linux\/cgroup.h>/a \
+            struct cgroup_namespace {\
+                atomic_t count;\
+                struct cgroup *root;\
+            };' kernel/cgroup.c
+        fi
+
     - name: 修复 GCC 编译常见问题
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
@@ -80,7 +91,7 @@ jobs:
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 禁用 -Werror
+        # 尝试禁用 Makefile 中的 -Werror
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
 
@@ -100,18 +111,18 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 设置 GCC 路径
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
-        # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
         # 编译命令
+        # 新增 KCFLAGS 参数，强制忽略 "unused-function" 警告和所有其他错误
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-unused-function -Wno-error"
                 
     - name: 准备打包内核
       run: |
