@@ -40,25 +40,34 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
     
-    - name: ⚙️ 合并 GKI 配置文件 (关键步骤)
+    - name: ⚙️ 合并 GKI 配置文件 (修复版)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 定义基础配置和厂商配置片段
+        # 1. 准备 output 目录
+        mkdir -p out
+
+        # 定义要合并的文件
         BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
         VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
         
         echo "正在合并配置: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
         
-        # 使用内核自带脚本合并配置
-        # 这会生成最终的 .config 文件
         export ARCH=arm64
+        
+        # 2. 合并配置 (生成到当前源码根目录 .config)
         scripts/kconfig/merge_config.sh -m $BASE_DEFCONFIG $VENDOR_FRAGMENT
         
-        # 整理配置
-        make olddefconfig
+        # 3. 【关键】将 .config 移动到 out 目录
+        mv .config out/
         
-        echo "配置合并完成！"
+        # 4. 【关键】清理源码树残留，解决 "source tree is not clean" 报错
+        make mrproper
+        
+        # 5. 在 out 目录重新整理配置
+        make O=out olddefconfig
+        
+        echo "配置合并完成，源码树已清理。"
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
@@ -66,8 +75,8 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         
-        # 直接对根目录下的 .config 进行修改
-        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/.config
+        # 直接修改 out 目录下的 .config
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
 
     - name: 修复现代内核编译问题 (GKI/Clang18)
       run: |
@@ -75,8 +84,8 @@ jobs:
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
         
-        # 在 .config 中直接修改 stack protector
-        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" .config
+        # 在 out/.config 中修改 stack protector
+        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
@@ -97,7 +106,7 @@ jobs:
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
         
-        # 注意：这里不需要再指定 defconfig，因为我们在"合并配置"步骤已经生成了 .config
+        # 此时 out/.config 已经准备好了，直接编译即可
         
         make -j$(nproc --all) \
             O=out \
