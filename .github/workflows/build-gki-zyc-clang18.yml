@@ -57,19 +57,32 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 方法1: 增加栈帧大小限制到 4096
-        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=4096/g' {} \;
+        # 方法1: 增加栈帧大小限制到 8192 (因为 rfcomm_run 需要 7360)
+        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         
         # 方法2: 在主 Makefile 中添加编译器标志，将栈帧警告降级为非错误
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
-        echo "KBUILD_CFLAGS += -Wframe-larger-than=4096" >> Makefile
+        echo "KBUILD_CFLAGS += -Wframe-larger-than=8192" >> Makefile
         
         # 方法3: 针对 quota.c 文件禁用栈帧检查
         if [ -f fs/quota/Makefile ]; then
           echo "CFLAGS_quota.o += -Wno-frame-larger-than" >> fs/quota/Makefile
         fi
         
-        echo "已应用栈帧大小修复"
+        # 方法4: 针对 rfcomm 蓝牙模块禁用栈帧检查
+        if [ -f net/bluetooth/rfcomm/Makefile ]; then
+          echo "CFLAGS_core.o += -Wno-frame-larger-than" >> net/bluetooth/rfcomm/Makefile
+        fi
+        
+        # 方法5: 修复 perf_helper.c 函数原型错误
+        if [ -f drivers/misc/perf_helper.c ]; then
+          sed -i 's/static void kswapd_task_show()/static void kswapd_task_show(void)/g' drivers/misc/perf_helper.c
+        fi
+        
+        # 方法6: 禁用严格原型检查错误 (作为备用方案)
+        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
+        
+        echo "已应用所有编译修复"
 
     - name: 配置 ksu
       if: env.ENABLE_KERNELSU == 'true'
