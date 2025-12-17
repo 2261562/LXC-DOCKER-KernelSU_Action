@@ -5,7 +5,7 @@ on:
 jobs:
   build:
     name: Build Kernel (GCC 4.9)
-    # 关键修改：强制使用 Ubuntu 22.04，因为它自带 Python 2 支持
+    # 保持使用 Ubuntu 22.04 以支持 Python 2
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -27,23 +27,25 @@ jobs:
     - name: 构建编译环境
       run: |
         sudo apt-get update
-        # Ubuntu 22.04 中，python2 包依然可用
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         
-        # 建立软连接，让 'python' 命令指向 python2
+        # 建立 python 软连接
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载 Google 官方 GCC 4.9 工具链
+    - name: 下载 Google 官方 GCC 4.9 工具链 (Android 9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
+        # 关键修改：将分支 tag 从 android-10... 改为 android-9.0.0_r61
+        # 这是包含真实 GCC 二进制文件的最后一个稳定版本
+        
         # 下载 64位 GCC 4.9
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 --depth=1 gcc64
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         
         # 下载 32位 GCC 4.9
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 --depth=1 gcc32
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
     - name: 下载内核源码
       run: |
