@@ -23,10 +23,15 @@ jobs:
         cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
-    - name: 构建编译环境
+    - name: 构建编译环境 (含 Python2 修复)
       run: |
         sudo apt-get update
-        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        # 增加 python2 安装
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        
+        # 关键修复：建立 python2 的软连接，确保脚本能找到解释器
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
     - name: 下载 Google 官方 GCC 4.9 工具链
@@ -34,7 +39,6 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         
         # 下载 64位 GCC 4.9 (用于编译内核主体)
-        # 使用 android-10.0.0_r47 标签，确保能下载到被移除前的 GCC
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 --depth=1 gcc64
         
         # 下载 32位 GCC 4.9 (用于编译 vDSO 等兼容库)
@@ -68,12 +72,12 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 修复 dtc 兼容性 (GCC 环境下依然可能遇到)
+        # 修复 dtc 兼容性
         if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 禁用 -Werror，防止因代码风格警告导致编译失败
+        # 禁用 -Werror
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
 
@@ -93,15 +97,13 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 设置 GCC 路径到环境变量
+        # 设置 GCC 路径
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
         # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
         # 编译命令
-        # 不指定 CC=clang，也不指定 LLVM=1
-        # 直接使用 CROSS_COMPILE 指定 GCC 前缀
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
