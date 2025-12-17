@@ -1,0 +1,178 @@
+name: 老旧设备 GCC 4.9 (Fix WiFi)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Kernel (GCC 4.9 + WiFi)
+    runs-on: ubuntu-22.04
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 环境变量配置
+      run: |
+        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
+        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
+        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
+
+    - name: 构建编译环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        
+        # 建立 python 软连接
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+
+    - name: 下载 Google 官方 GCC 4.9 工具链 (Android 9)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        
+        # 下载 64位 GCC 4.9
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
+        
+        # 下载 32位 GCC 4.9
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
+    
+    - name: 下载内核源码
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+                  
+    - name: 开启 LXC 和 Docker 配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+
+    - name: 添加 Runc 补丁
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
+        if [ -f android-kernel/kernel/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c               
+        fi
+        if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        fi
+
+    - name: 修复 Runc 补丁与类型定义 (Linux 4.9 适配)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        if [ -f kernel/cgroup.c ]; then
+            sed -i '/#include <linux\/cgroup.h>/a \
+            struct cgroup_namespace {\
+                atomic_t count;\
+                struct cgroup_root *root;\
+            };' kernel/cgroup.c
+        fi
+
+    - name: 彻底禁用 GCC Wrapper 与修复编译
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        if [ -f scripts/gcc-wrapper.py ]; then
+            echo '#!/usr/bin/env python' > scripts/gcc-wrapper.py
+            echo 'import os' >> scripts/gcc-wrapper.py
+            echo 'import sys' >> scripts/gcc-wrapper.py
+            echo 'os.execvp(sys.argv[1], sys.argv[1:])' >> scripts/gcc-wrapper.py
+            chmod +x scripts/gcc-wrapper.py
+        fi
+        
+        if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+            sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
+        fi
+
+        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
+        sed -i 's/-Werror//g' Makefile
+
+    - name: 配置 KernelSU
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+               
+    - name: 设置 ccache 缓存
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: build-kernel-redmi6pro-gcc49
+        max-size: 2G
+
+    - name: 开始编译内核与模块 (GCC)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
+        
+        # 1. 生成配置文件
+        make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        
+        # 2. 编译内核 Image
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-unused-function -Wno-error"
+            
+        # 3. 编译内核模块 (新增步骤，解决 WiFi 问题)
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-unused-function -Wno-error" \
+            modules
+            
+        # 4. 安装/剥离模块 (生成 .ko 文件到 modules_install 目录)
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            INSTALL_MOD_PATH=../modules_install \
+            INSTALL_MOD_STRIP=1 \
+            modules_install
+                
+    - name: 准备打包内核 (集成模块)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
+        
+        # 1. 复制内核镜像
+        cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        
+        # 2. 复制并打包模块 (关键修复步骤)
+        # Android 9 老设备通常将模块放在 /vendor/lib/modules
+        mkdir -p AnyKernel3/modules/vendor/lib/modules
+        
+        # 查找所有编译出来的 .ko 文件并复制到打包目录
+        # 注意：这里会递归查找 modules_install 目录
+        find modules_install -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+        
+        # 打印一下复制了哪些模块，方便调试
+        echo "已打包的模块:"
+        ls -R AnyKernel3/modules/
+        
+        # 3. 清理无用文件 (注意不要再删 AnyKernel3/modules 了！)
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/patch
+    
+    - name: 打包并上传
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        path: kernel_workspace/AnyKernel3/*
