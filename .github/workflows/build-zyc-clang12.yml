@@ -1,4 +1,4 @@
-name: 老旧设备 Zyc Clang 18
+name: 老旧设备 Zyc Clang 12
 on:
   workflow_dispatch:
 
@@ -23,34 +23,34 @@ jobs:
         cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
-    - name: 构建编译内核环境
+    - name: 构建编译环境
       run: |
         sudo apt-get update
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载zyc-clang编译器 (Clang 18)
+    - name: 下载谷歌 Clang 12 编译器
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang-zyc
-        wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20230903-release/Clang-18.0.0-20230903.tar.gz
-        tar -C clang-zyc/ -zxf Clang-18.0.0-20230903.tar.gz
+        mkdir clang-aosp
+        # 使用 Google 官方预编译的 Clang 12.0.5 (r416183b)
+        git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android12-release clang-aosp
     
     - name: 下载内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
                   
-    - name: 开启lxc和docker配置
+    - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        # 屏蔽可能导致编译失败的配置
+        # 屏蔽老设备不需要的配置
         echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 添加runc补丁 (老设备必须)
+    - name: 添加 Runc 补丁
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
@@ -60,69 +60,51 @@ jobs:
         if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
-    
-    - name: 修复clang18兼容性 (针对老内核)
+
+    - name: 修复老旧内核编译报错 (DTC & Warnings)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 禁用 Strong Stack Protector，老内核配合新 Clang 容易报错
-        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        # 下载通用的 Clang 修复脚本
-        wget https://github.com/fate-think/LXC-DOCKER-KernelSU_Action/releases/download/v3.0.0-stable/clangfix3.sh
-        chmod u+x clangfix3.sh
-        ./clangfix3.sh        
+        
+        # 修复1: 解决 Ubuntu 22.04+ 编译 dtc 时的 "multiple definition of yylloc" 错误
+        if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+            sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
+        fi
+
+        # 修复2: 屏蔽 -Werror，防止将警告视为错误导致编译中断
+        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
+        sed -i 's/-Werror//g' Makefile
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
-
-    - name: 开启KVM (可选)
-      if: env.ENABLE_KVM == 'true'
-      run: |
-         cd $GITHUB_WORKSPACE/kernel_workspace
-         echo "CONFIG_VIRTUALIZATION=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         echo "CONFIG_KVM=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
                
-    - name: 设置ccache缓存
+    - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-redmi6pro
+        key: build-kernel-redmi6pro-stable
         max-size: 2G
 
     - name: 开始编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
-        export KBUILD_BUILD_HOST=Github-Action
-        export KBUILD_BUILD_USER=Builder
+        # 设置 Clang 12 的路径
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r416183b/bin:$PATH
         
-        # 使用提供的 defconfig 生成配置
-        make -s -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        # 生成配置
+        make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 开始编译
-        if [ ${{env.LLVM_CONFIG}}=y ]; then
-            make -j$(nproc --all) \
-                CC="ccache clang" \
-                CXX=clang++ \
-                O=out \
-                ARCH=arm64 \
-                CLANG_TRIPLE="aarch64-linux-gnu-" \
-                CROSS_COMPILE="aarch64-linux-gnu-" \
-                CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-                LLVM=1 LLVM_IAS=1
-        else
-            make -j$(nproc --all) \
-                CC="ccache clang" \
-                CXX=clang++ \
-                O=out \
-                ARCH=arm64 \
-                CLANG_TRIPLE="aarch64-linux-gnu-" \
-                CROSS_COMPILE="aarch64-linux-gnu-" \
-                CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-        fi
+        # 编译命令 (使用最稳妥的参数)
+        # 强制使用 GNU 的交叉编译工具链 (binutils) 处理汇编和链接
+        # 仅使用 Clang 编译 C 代码
+        make -j$(nproc --all) \
+            CC="ccache clang" \
+            O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            CLANG_TRIPLE="aarch64-linux-gnu-"
                 
     - name: 准备打包内核
       run: |
@@ -132,14 +114,8 @@ jobs:
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
         sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
         
-        # 注意：Redmi 6 Pro 通常使用 Image.gz-dtb
-        if [ -f android-kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-        else
-            # 如果没有 dtb 附加，尝试复制 Image.gz
-            cp android-kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-            echo "Warning: Image.gz-dtb not found, using Image.gz"
-        fi
+        # 复制 Image.gz-dtb (Redmi 6 Pro 标准格式)
+        cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
         rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
