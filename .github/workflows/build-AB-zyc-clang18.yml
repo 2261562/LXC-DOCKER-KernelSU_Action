@@ -58,12 +58,6 @@ jobs:
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 修复k30pro/一加9R内核配置
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace
-        chmod 755 $GITHUB_WORKSPACE/fix_k30pro_config.sh
-        $GITHUB_WORKSPACE/fix_k30pro_config.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-
     - name: 添加runc补丁
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
