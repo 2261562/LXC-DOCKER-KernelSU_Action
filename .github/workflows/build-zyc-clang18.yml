@@ -1,10 +1,10 @@
-name: Redmi Note 12 5G (Fix Errors)
+name: Redmi Note 12 5G (Fix Errors v2)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix)
+    name: Build Kernel (Fix v2)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -48,7 +48,6 @@ jobs:
         # 1. 准备 output 目录
         mkdir -p out
 
-        # 定义要合并的文件 (根据之前的检测，使用 sunstone 或 moonstone)
         # 优先使用 moonstone 因为源码分支叫 moonstone
         if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
             VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
@@ -78,34 +77,37 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # --- 修复 1: Focaltech 触控驱动缺文件 ---
-        echo "修复 Focaltech 固件路径问题..."
-        # 1. 创建一个空的固件文件在驱动目录本地
+        # --- 修复 1: Focaltech 触控驱动缺文件 (第一层) ---
+        echo "修复 Focaltech 固件路径问题 (fw_sample.i)..."
         touch drivers/input/touchscreen/FT3519T/fw_sample.i
         echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
-        
-        # 2. 修改头文件，把包含路径改为当前目录 (去掉 include/firmware/ 前缀)
-        # 原句: #define FTS_UPGRADE_FW_FILE "include/firmware/fw_sample.i"
-        # 改为: #define FTS_UPGRADE_FW_FILE "fw_sample.i"
         sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
         
+        # --- 修复 2: Focaltech 触控驱动缺文件 (第二层 - 新增修复) ---
+        echo "修复 Focaltech Pramboot 固件缺失 (FT5452J...)..."
+        # 错误路径: ../include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        # 相对 drivers/input/touchscreen/FT3519T/focaltech_flash/
+        # 目标路径: drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         
-        # --- 修复 2: 编译器警告升级为错误 ---
+        mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
+        echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        
+        # --- 修复 3: 编译器警告升级为错误 ---
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
-        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
         
-        # 全局禁用 -Werror (核弹级修复，防止任何警告中断编译)
-        # KSU 很多警告在 Clang 18 下会报错
+        # 全局禁用 -Werror (核弹级修复)
         echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=implicit-function-declaration" >> Makefile
+        
+        # 在 out/.config 中修改 stack protector
+        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
 
 
-    - name: 配置 KernelSU (降级版)
+    - name: 配置 KernelSU (降级版 v0.9.5)
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 强制使用 v0.9.5，修复 TWA_RESUME 和 seccomp 报错
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
     - name: 设置 ccache 缓存
