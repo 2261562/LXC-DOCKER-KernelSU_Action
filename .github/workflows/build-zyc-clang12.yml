@@ -95,16 +95,17 @@ jobs:
         # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 编译命令 (关键修改：添加 -no-integrated-as)
-        # 这会强制 Clang 使用 binutils-aarch64-linux-gnu 中的 'as' 汇编器
-        # 从而完美解决 kernel/bounds.c 和 devicetable-offsets.s 的报错
+        # 编译命令 (关键修改在最后一行)
+        # 1. CC 保持 -no-integrated-as 以修复汇编器错误
+        # 2. 新增 KCFLAGS 屏蔽 -Warray-bounds 报错，并强制 -Wno-error 忽略所有警告产生的错误
         make -j$(nproc --all) \
             CC="ccache clang -no-integrated-as" \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE="aarch64-linux-gnu-" \
             CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-            CLANG_TRIPLE="aarch64-linux-gnu-"
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            KCFLAGS="-Wno-error -Wno-array-bounds"
                 
     - name: 准备打包内核
       run: |
