@@ -5,7 +5,8 @@ on:
 jobs:
   build:
     name: Build Kernel (GCC 4.9)
-    runs-on: ubuntu-latest
+    # 关键修改：强制使用 Ubuntu 22.04，因为它自带 Python 2 支持
+    runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
     steps:
@@ -23,13 +24,13 @@ jobs:
         cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
-    - name: 构建编译环境 (含 Python2 修复)
+    - name: 构建编译环境
       run: |
         sudo apt-get update
-        # 增加 python2 安装
-        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        # Ubuntu 22.04 中，python2 包依然可用
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         
-        # 关键修复：建立 python2 的软连接，确保脚本能找到解释器
+        # 建立软连接，让 'python' 命令指向 python2
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
@@ -38,10 +39,10 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # 下载 64位 GCC 4.9 (用于编译内核主体)
+        # 下载 64位 GCC 4.9
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 --depth=1 gcc64
         
-        # 下载 32位 GCC 4.9 (用于编译 vDSO 等兼容库)
+        # 下载 32位 GCC 4.9
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 --depth=1 gcc32
     
     - name: 下载内核源码
