@@ -1,10 +1,10 @@
-name: Redmi Note 12 5G (Fix Errors v3)
+name: Redmi Note 12 5G (Fix Errors v4)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix v3)
+    name: Build Kernel (Fix v4)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -69,34 +69,37 @@ jobs:
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
 
-    - name: 修复编译报错 (Focaltech & KSU & Power)
+    - name: 修复编译报错 (All-in-One)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # --- 修复 1: sm5602_fg.c 缺少 int 类型声明 (本次新增) ---
-        echo "修复 sm5602_fg.c 类型错误..."
+        # --- 修复 1: sm5602_fg.c 缺少 int 类型声明 ---
         sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
         
-        # --- 修复 2: Focaltech 触控驱动缺文件 ---
-        echo "修复 Focaltech 固件路径问题..."
+        # --- 修复 2: Focaltech 触控驱动缺文件 (第一层) ---
         touch drivers/input/touchscreen/FT3519T/fw_sample.i
         echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
         sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
         
+        # --- 修复 3: Focaltech 触控驱动缺文件 (第二层) ---
         mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
         echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         
-        # --- 修复 3: 编译器警告升级为错误 ---
+        # --- 修复 4: 全局禁用所有可能导致失败的 Werror 检查 ---
+        
+        # 4.1: 栈大小限制
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
         
-        # 全局禁用 -Werror
+        # 4.2: 通用禁用
         echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=implicit-function-declaration" >> Makefile
-        # 针对 implicit-int (本次报错的根源) 明确禁用错误
         echo "KBUILD_CFLAGS += -Wno-error=implicit-int" >> Makefile
         
-        # 修改 stack protector
+        # 4.3: 新增 - 禁用 strict-prototypes (本次报错修复)
+        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
+        
+        # 5. 修改 stack protector
         sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" out/.config
 
     - name: 配置 KernelSU (降级版 v0.9.5)
