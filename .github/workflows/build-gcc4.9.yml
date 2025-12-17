@@ -1,0 +1,129 @@
+name: 老旧设备 GCC 4.9
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Kernel (GCC 4.9)
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: 环境变量配置
+      run: |
+        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
+        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
+        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
+
+    - name: 构建编译环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+
+    - name: 下载 Google 官方 GCC 4.9 工具链
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        
+        # 下载 64位 GCC 4.9 (用于编译内核主体)
+        # 使用 android-10.0.0_r47 标签，确保能下载到被移除前的 GCC
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 --depth=1 gcc64
+        
+        # 下载 32位 GCC 4.9 (用于编译 vDSO 等兼容库)
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 --depth=1 gcc32
+    
+    - name: 下载内核源码
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+                  
+    - name: 开启 LXC 和 Docker 配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+
+    - name: 添加 Runc 补丁
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
+        if [ -f android-kernel/kernel/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c               
+        fi
+        if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        fi
+
+    - name: 修复 GCC 编译常见问题
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 修复 dtc 兼容性 (GCC 环境下依然可能遇到)
+        if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
+            sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
+        fi
+
+        # 禁用 -Werror，防止因代码风格警告导致编译失败
+        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
+        sed -i 's/-Werror//g' Makefile
+
+    - name: 配置 KernelSU
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+               
+    - name: 设置 ccache 缓存
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: build-kernel-redmi6pro-gcc49
+        max-size: 2G
+
+    - name: 开始编译内核 (GCC)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 设置 GCC 路径到环境变量
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
+        
+        # 生成配置
+        make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        
+        # 编译命令
+        # 不指定 CC=clang，也不指定 LLVM=1
+        # 直接使用 CROSS_COMPILE 指定 GCC 前缀
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+                
+    - name: 准备打包内核
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
+        
+        # 复制内核镜像
+        cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md
+        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+    
+    - name: 打包并上传
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        path: kernel_workspace/AnyKernel3/*
