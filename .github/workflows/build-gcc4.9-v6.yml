@@ -137,12 +137,20 @@ jobs:
         echo "正在提取 Wi-Fi 模块..."
         mkdir -p AnyKernel3/modules/vendor/lib/modules
         
-        # 搜索并复制所有 ko 模块
+        # 搜索并复制所有 ko 模块 (通常 wlan 驱动叫 wlan.ko 或 qca_cld3_wlan.ko)
         find android-kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
         
-        # 打印模块列表以供检查
-        echo "已打包模块："
-        ls -R AnyKernel3/modules/
+        # --- 关键检查: 确认 Wi-Fi 模块是否存在 ---
+        echo ">>> 检查模块列表："
+        ls -l AnyKernel3/modules/vendor/lib/modules/
+        
+        if ls AnyKernel3/modules/vendor/lib/modules/ | grep -qE "wlan.ko|qca_cld3_wlan.ko"; then
+            echo "✅ 成功检测到 Wi-Fi 模块！"
+        else
+            echo "❌ 警告：在输出目录中未发现 Wi-Fi 模块 (wlan.ko)！"
+            echo "可能是内核配置中 Wi-Fi 仍被设为内建 (y) 而非模块 (m)，或者编译失败。"
+            # 这里可以选择 exit 1 让构建失败，引起注意
+        fi
         # -----------------------------------------------------
 
         rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/patch
