@@ -16,6 +16,7 @@ jobs:
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
       ENABLE_LXC_DOCKER: true
+      KERNEL_LOCALVERSION: -mikasa
     
     steps:
     - uses: actions/checkout@v3
@@ -153,6 +154,7 @@ jobs:
             CLANG_TRIPLE="aarch64-linux-gnu-" \
             CROSS_COMPILE="aarch64-linux-gnu-" \
             CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             LLVM=1 \
             LLVM_IAS=1
                 

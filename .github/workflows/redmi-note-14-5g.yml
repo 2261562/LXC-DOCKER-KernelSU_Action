@@ -19,6 +19,7 @@ jobs:
       ENABLE_LXC_DOCKER: true
       ENABLE_KERNELSU: true
       KERNELSU_TAG: main
+      KERNEL_LOCALVERSION: -mikasa
 
     steps:
     - uses: actions/checkout@v3
@@ -112,9 +113,9 @@ jobs:
         export KBUILD_BUILD_USER=Builder
         make -s -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         if [ ${{env.LLVM_CONFIG}}=y ]; then
-        make -j$(nproc --all) CONFIG_DEBUG_SECTION_MISMATCH=y CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-" LLVM=1 LLVM_IAS=1
+        make -j$(nproc --all) CONFIG_DEBUG_SECTION_MISMATCH=y CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-" LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" LLVM=1 LLVM_IAS=1
         else
-        make -j$(nproc --all) CONFIG_DEBUG_SECTION_MISMATCH=y CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+        make -j$(nproc --all) CONFIG_DEBUG_SECTION_MISMATCH=y CC="ccache clang" CXX=clang++ O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-" LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}"
         fi
                 
     - name: 准备打包内核

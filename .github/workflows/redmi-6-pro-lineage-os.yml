@@ -11,6 +11,7 @@ jobs:
       KERNEL_ZIP_NAME: Sakura_Kernel
       ENABLE_KERNELSU: true
       KERNELSU_TAG: main
+      KERNEL_LOCALVERSION: -mikasa
     
     steps:
     - uses: actions/checkout@v3
@@ -115,6 +116,7 @@ jobs:
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             KCFLAGS="-Wno-unused-function -Wno-error" || exit 1
 
     - name: 准备打包内核
