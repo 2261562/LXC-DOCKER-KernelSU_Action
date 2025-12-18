@@ -1,18 +1,17 @@
-name: 老旧设备 GCC 4.9 (带 Wi-Fi 修复)
+name: Redmi 6 Pro (Sakura) GCC 4.9 + Wi-Fi
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (GCC 4.9 + Wi-Fi)
+    name: Build Kernel (Sakura GCC 4.9)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
     env:
-      # 在这里指定 Wi-Fi 驱动的分支。
-      # GCC 4.9 对应 Android 9 时代，建议使用 lineage-16.0
-      # 如果编译报错，可以尝试 lineage-15.1 或 lineage-17.1
-      WIFI_DRIVER_BRANCH: "lineage-16.0"
+      # Redmi 6 Pro (Sakura) 是 Android 9 (Pie) 机型
+      # 必须使用 9.0 分支，否则 GCC 4.9 无法编译
+      WIFI_DRIVER_BRANCH: "9.0"
 
     steps:
     - uses: actions/checkout@v3
@@ -39,6 +38,7 @@ jobs:
     - name: 下载 Google 官方 GCC 4.9 工具链
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
+        # GCC 4.9 是编译 Linux 3.18/4.9 (Redmi 6 Pro) 的标准工具
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
@@ -47,22 +47,22 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-    # ------------------- 新增步骤：下载 Wi-Fi 驱动 -------------------
-    - name: 下载 Wi-Fi 驱动源码 (QCA CLD 3.0)
+    # ------------------- 核心修复：下载适配 MSM8953 的 Wi-Fi 驱动 -------------------
+    - name: 下载 Wi-Fi 驱动 (Crdroid 9.0 镜像)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        echo "正在下载 Wi-Fi 驱动，分支: ${{ env.WIFI_DRIVER_BRANCH }}"
+        echo "正在下载 Wi-Fi 驱动，使用 Crdroid 镜像，分支: ${{ env.WIFI_DRIVER_BRANCH }}"
         
-        # 创建标准的 Qualcomm 驱动目录结构
+        # 创建 MSM8953 常见的驱动路径
         mkdir -p drivers/vendor/qcom/opensource/wlan
         cd drivers/vendor/qcom/opensource/wlan
 
-        # 克隆 LineageOS 仓库 (深度为1，减少下载时间)
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-    # ---------------------------------------------------------------
+        # 【修复】使用 Crdroid 仓库替代 LineageOS (解决 404 问题)
+        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+    # ----------------------------------------------------------------------------------
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
@@ -72,29 +72,7 @@ jobs:
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 添加 Runc 补丁
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace
-        chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
-        if [ -f android-kernel/kernel/cgroup.c ]; then
-            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c               
-        fi
-        if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
-            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
-        fi
-
-    - name: 修复 Runc 补丁与类型定义
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        if [ -f kernel/cgroup.c ]; then
-            sed -i '/#include <linux\/cgroup.h>/a \
-            struct cgroup_namespace {\
-                atomic_t count;\
-                struct cgroup_root *root;\
-            };' kernel/cgroup.c
-        fi
-
-    # ------------------- 新增步骤：整合 Wi-Fi 到构建系统 -------------------
+    # ------------------- 核心修复：整合驱动到构建系统 -------------------
     - name: 挂载 Wi-Fi 驱动并修复构建脚本
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
@@ -108,27 +86,28 @@ jobs:
         fi
         sed -i 's/-Werror//g' Makefile
         
-        # 2. 修改 drivers/Makefile
+        # 2. 修改 drivers/Makefile，确保内核知道去哪里找驱动
+        # 注意：drivers/Makefile 总是存在的
         if ! grep -q "qcacld-3.0" drivers/Makefile; then
             echo "正在修改 drivers/Makefile..."
             echo "obj-\$(CONFIG_QCA_CLD3_WLAN) += vendor/qcom/opensource/wlan/qcacld-3.0/" >> drivers/Makefile
         fi
 
-        # 3. 修改 drivers/Kconfig
+        # 3. 修改 drivers/Kconfig，把驱动配置加入菜单
         if ! grep -q "qcacld-3.0/Kconfig" drivers/Kconfig; then
             echo "正在修改 drivers/Kconfig..."
-            # 在 endmenu 之前插入 source
             sed -i '$i source "drivers/vendor/qcom/opensource/wlan/qcacld-3.0/Kconfig"' drivers/Kconfig
         fi
 
-        # 4. 在 defconfig 中启用 Wi-Fi 模块
-        # 注意：这里我们强制追加配置，确保它被开启
+        # 4. 强制在 defconfig 中启用 Wi-Fi
         CONFIG_PATH=arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        
         echo "" >> $CONFIG_PATH
-        echo "# Wi-Fi Configuration Override" >> $CONFIG_PATH
+        echo "# Wi-Fi Auto-Injection" >> $CONFIG_PATH
         echo "CONFIG_QCA_CLD3_WLAN=m" >> $CONFIG_PATH
+        # MSM8953 通常需要 SNOC (System NoC) 选项
         echo "CONFIG_QCA_CLD3_WLAN_SNOC=y" >> $CONFIG_PATH
-        # 确保基础网络栈开启
+        # 确保基础依赖开启
         echo "CONFIG_CFG80211=y" >> $CONFIG_PATH
         echo "CONFIG_MAC80211=y" >> $CONFIG_PATH
     # -------------------------------------------------------------------
@@ -142,7 +121,7 @@ jobs:
     - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-gcc49-wifi
+        key: build-kernel-sakura-wifi
         max-size: 2G
 
     - name: 开始编译内核
@@ -150,10 +129,10 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
-        # 先生成配置
+        # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 开始编译，关闭无用警告
+        # 开始编译
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -166,36 +145,33 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
         
-        # 基础 AnyKernel3 配置
+        # 适配 Redmi 6 Pro 的打包配置
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
         sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
         
-        # 开启模块刷入功能 (尝试启用 AnyKernel3 的自动模块功能)
+        # 开启模块处理功能
         sed -i 's/do.modules=0/do.modules=1/g' AnyKernel3/anykernel.sh
         
-        # 复制内核镜像
+        # 复制 Image.gz-dtb
         cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         
-        # ----------------- 提取并放置 Wi-Fi 模块 -----------------
-        echo "正在提取 wlan.ko..."
-        
-        # 创建 vendor 模块目录结构
-        # AnyKernel3 默认会将 modules/vendor/lib/modules 下的文件推送到设备的 /vendor/lib/modules
+        # ----------------- 提取 wlan.ko -----------------
+        echo "正在提取 Wi-Fi 模块..."
         mkdir -p AnyKernel3/modules/vendor/lib/modules
         
-        # 搜索生成的 wlan.ko (可能名为 wlan.ko 或 qca_cld3_wlan.ko)
+        # 查找并复制 wlan.ko
+        # MSM8953 编译出来的模块通常叫 wlan.ko
         find android-kernel/out -name "wlan.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
-        find android-kernel/out -name "qca_cld3_wlan.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
         
-        # 检查是否成功复制
+        echo "模块列表："
         ls -R AnyKernel3/modules/
-        # -------------------------------------------------------
+        # -----------------------------------------------
 
         rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/patch
     
     - name: 打包并上传
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.KERNEL_ZIP_NAME }}_WiFi-Fixed
+        name: ${{ env.KERNEL_ZIP_NAME }}_Sakura_WiFi-Fixed
         path: kernel_workspace/AnyKernel3/*
