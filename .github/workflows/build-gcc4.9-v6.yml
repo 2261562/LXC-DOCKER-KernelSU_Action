@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (LineageOS + msm8953)
+name: 老旧设备 GCC 4.9 (LineageOS + Fix Errors)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix WiFi Final)
+    name: Build Kernel (Fix Cgroup Error)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -13,13 +13,11 @@ jobs:
     
     - name: 环境变量配置
       run: |
-        # 只读取部分通用配置
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
-        
-        # ⚠️ 直接指定配置为 msm8953_defconfig (适用于 sakura)
+        # 强制指定 msm8953 配置
         echo "KERNEL_CONFIG=msm8953_defconfig" >> $GITHUB_ENV
 
     - name: 构建编译环境
@@ -39,7 +37,6 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         echo "正在下载 LineageOS 源码..."
-        # 强制使用 lineage-16.0 分支
         git clone https://github.com/LineageOS/android_kernel_xiaomi_msm8953 -b lineage-16.0 android-kernel --depth=1
 
     - name: 开启 LXC 和 Docker 配置
@@ -50,11 +47,11 @@ jobs:
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         
-        # ⚠️ 强制写入 WiFi 模块配置 (确保 msm8953_defconfig 开启了模块)
+        # 强制开启 WiFi 模块配置
         echo "CONFIG_QCA_CLD_WLAN=m" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "CONFIG_QCACLD_WLAN_LMO=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 补丁与修复 (Runc/GCC/DTC)
+    - name: 补丁与修复 (暴力清除 Werror)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
@@ -78,9 +75,11 @@ jobs:
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 清理 Makefile Werror
+        # ⚠️ 关键修改：暴力查找所有 Makefile 并删除 -Werror
+        find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+        
+        # 再次确保根目录 Makefile 干净
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
-        sed -i 's/-Werror//g' Makefile
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
@@ -94,7 +93,7 @@ jobs:
         key: build-kernel-redmi6pro-lineageos
         max-size: 2G
 
-    - name: 开始编译 (内核 + 模块)
+    - name: 开始编译 (忽略返回值错误)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -111,12 +110,14 @@ jobs:
         make O=out ARCH=arm64 olddefconfig
         
         # 3. 编译内核与模块
+        # ⚠️ 关键修改：添加了 -Wno-return-type 和 -Wno-int-to-pointer-cast
+        # 这样编译器看到没有返回值的函数只会警告，不会报错停止
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            KCFLAGS="-Wno-unused-function -Wno-error" \
+            KCFLAGS="-Wno-unused-function -Wno-error -Wno-return-type -Wno-int-to-pointer-cast" \
             Image.gz-dtb modules
             
         # 4. 安装模块
