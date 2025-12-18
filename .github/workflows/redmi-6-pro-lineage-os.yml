@@ -1,4 +1,4 @@
-name: Redmi 6 Pro (Sakura) - LineageOS 16.0 修正版
+name: Redmi 6 Pro (Sakura) - LineageOS 16.0
 on:
   workflow_dispatch:
 

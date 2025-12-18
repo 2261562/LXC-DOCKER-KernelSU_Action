@@ -1,4 +1,4 @@
-name: Redmi Note 12 5G (Merge Config Fix)
+name: Redmi Note 12 5G
 on:
   workflow_dispatch:
 

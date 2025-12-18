@@ -1,4 +1,4 @@
-name: 老旧设备 GCC 4.9
+name: Redmi 6 Pro (Sakura) - 小米官方（无Wifi模块）
 on:
   workflow_dispatch:
 

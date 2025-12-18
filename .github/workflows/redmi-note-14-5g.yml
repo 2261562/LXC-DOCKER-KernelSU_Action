@@ -1,4 +1,4 @@
-name: GKI 内核 zyc clang18
+name: Redmi Note 14 5G
 on:
   workflow_dispatch:
 
