@@ -47,29 +47,32 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-# ------------------- 救命稻草：下载 Wi-Fi 驱动 (DivestOS 16.0 存档) -------------------
-    - name: 下载 Wi-Fi 驱动源码 (DivestOS / LineageOS 16.0 镜像)
+# ------------------- 终极考古修复：使用 EssentialOpenSource (6年前存档) -------------------
+    - name: 下载 Wi-Fi 驱动源码 (Essential Phone 存档 - 完美匹配 GCC 4.9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # DivestOS 是目前唯一完整保留 LineageOS 16.0 (Android 9) 源码的活跃团队
-        export WIFI_BRANCH="lineage-16.0"
-        
-        echo "正在下载 Wi-Fi 驱动，使用 DivestOS 仓库 (永久存档)，分支: $WIFI_BRANCH"
+        echo "正在下载 Wi-Fi 驱动，使用 EssentialOpenSource 静态存档..."
         
         # 创建驱动目录
         mkdir -p drivers/vendor/qcom/opensource/wlan
         cd drivers/vendor/qcom/opensource/wlan
 
-        # 使用 DivestOS 仓库
-        # qcacld-3.0
-        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
+        # EssentialOpenSource 的仓库自 2018/2019 年后未变动，非常适合 GCC 4.9 环境
+        # 且它们是公开的，绝不会 404
         
-        # fw-api
-        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
+        # 1. qcacld-3.0
+        git clone https://github.com/EssentialOpenSource/qcacld-3.0.git qcacld-3.0 --depth=1
         
-        # qca-wifi-host-cmn
-        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
+        # 2. fw-api
+        git clone https://github.com/EssentialOpenSource/fw-api.git fw-api --depth=1
+        
+        # 3. qca-wifi-host-cmn
+        git clone https://github.com/EssentialOpenSource/qca-wifi-host-cmn.git qca-wifi-host-cmn --depth=1
+        
+        # 4. 建立软链接 (Essential 的结构可能需要微调)
+        # 某些旧内核可能在 Kbuild 中寻找 'cmn' 而不是 'qca-wifi-host-cmn'
+        ln -sf qca-wifi-host-cmn cmn
     # -----------------------------------------------------------------------------------------
       
     - name: 开启 LXC 和 Docker 配置
