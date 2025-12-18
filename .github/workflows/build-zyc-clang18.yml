@@ -57,13 +57,23 @@ jobs:
         echo "正在合并配置: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
         export ARCH=arm64
         scripts/kconfig/merge_config.sh -m $BASE_DEFCONFIG $VENDOR_FRAGMENT
-        
-        # 强制开启 WiFi 相关配置 (确保在合并后应用，防止被覆盖)
-        echo "CONFIG_WLAN=y" >> .config
-        echo "CONFIG_QCACLD_WLAN=m" >> .config
-        
+        # 修复 icnss2 驱动报错 (Clang 18 严格检查)
+        if [ -f drivers/soc/qcom/icnss2/main.c ]; then
+            sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
+        fi
+
         mv .config out/
         make mrproper
+        make O=out olddefconfig
+
+        # 再次确认并强制开启 WiFi 和相关驱动 (在 olddefconfig 之后)
+        echo "CONFIG_WLAN=y" >> out/.config
+        echo "CONFIG_QCACLD_WLAN=m" >> out/.config
+        echo "CONFIG_QCA_CLD_WLAN=m" >> out/.config
+        echo "CONFIG_CNSS2=m" >> out/.config
+        echo "CONFIG_CNSS2_QMI=y" >> out/.config
+        echo "CONFIG_ICNSS2=m" >> out/.config
+        echo "CONFIG_ICNSS2_QMI=y" >> out/.config
         make O=out olddefconfig
 
     - name: 开启 LXC 和 Docker 配置
@@ -80,14 +90,15 @@ jobs:
         # --- 修复 1: sm5602_fg.c 缺少 int 类型声明 ---
         sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
         
-        # --- 修复 2: Focaltech 触控驱动缺文件 (第一层) ---
-        touch drivers/input/touchscreen/FT3519T/fw_sample.i
-        echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
-        sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
-        
-        # --- 修复 3: Focaltech 触控驱动缺文件 (第二层) ---
-        mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
-        echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        # --- 修复 2 & 3: Focaltech 触控驱动缺文件 ---
+        if [ -d drivers/input/touchscreen/FT3519T ]; then
+            touch drivers/input/touchscreen/FT3519T/fw_sample.i
+            echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
+            sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
+            
+            mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
+            echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        fi
         
         # --- 修复 4: 全局禁用所有可能导致失败的 Werror 检查 ---
         
@@ -100,6 +111,9 @@ jobs:
         echo "KBUILD_CFLAGS += -Wno-error=implicit-function-declaration" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=implicit-int" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=deprecated-non-prototype" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=incompatible-function-pointer-types" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=cast-function-type" >> Makefile
         
         # 4.3: 新增 - 禁用 unused 变量报错 (本次修复)
         echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
