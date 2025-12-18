@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (LineageOS + Fix Errors)
+name: 老旧设备 GCC 4.9 (LineageOS + Fix StackProtector)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix Cgroup Error)
+    name: Build Kernel (Fix All Errors)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -75,10 +75,8 @@ jobs:
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # ⚠️ 关键修改：暴力查找所有 Makefile 并删除 -Werror
+        # 暴力查找所有 Makefile 并删除 -Werror
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-        
-        # 再次确保根目录 Makefile 干净
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
 
     - name: 配置 KernelSU
@@ -93,25 +91,31 @@ jobs:
         key: build-kernel-redmi6pro-lineageos
         max-size: 2G
 
-    - name: 开始编译 (忽略返回值错误)
+    - name: 开始编译 (禁用堆栈保护 + 忽略错误)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
-        # 1. 生成配置
+        # 1. 生成初始配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 2. 强制开启模块支持
+        # 2. 修改配置 (关键修复！)
         cd out
+        # 强制开启模块
         echo "CONFIG_MODULES=y" >> .config
         echo "CONFIG_MODULE_UNLOAD=y" >> .config
+        
+        # 【关键】禁用导致报错的强堆栈保护
+        sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' .config
+        echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> .config
+        
         cd ..
+        
+        # 3. 更新配置
         make O=out ARCH=arm64 olddefconfig
         
-        # 3. 编译内核与模块
-        # ⚠️ 关键修改：添加了 -Wno-return-type 和 -Wno-int-to-pointer-cast
-        # 这样编译器看到没有返回值的函数只会警告，不会报错停止
+        # 4. 编译内核与模块
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -120,7 +124,7 @@ jobs:
             KCFLAGS="-Wno-unused-function -Wno-error -Wno-return-type -Wno-int-to-pointer-cast" \
             Image.gz-dtb modules
             
-        # 4. 安装模块
+        # 5. 安装模块
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
