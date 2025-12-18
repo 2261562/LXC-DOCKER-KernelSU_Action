@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (LineageOS + Fix StackProtector)
+name: 老旧设备 GCC 4.9 (LineageOS + Fix Flags)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix All Errors)
+    name: Build Kernel (Fix Flags v6)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -17,7 +17,6 @@ jobs:
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
-        # 强制指定 msm8953 配置
         echo "KERNEL_CONFIG=msm8953_defconfig" >> $GITHUB_ENV
 
     - name: 构建编译环境
@@ -51,7 +50,7 @@ jobs:
         echo "CONFIG_QCA_CLD_WLAN=m" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "CONFIG_QCACLD_WLAN_LMO=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 补丁与修复 (暴力清除 Werror)
+    - name: 补丁与修复 (精确修复编译参数)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
@@ -75,9 +74,15 @@ jobs:
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 暴力查找所有 Makefile 并删除 -Werror
+        # ⚠️ 【关键修复】精确处理 Werror，防止产生非法参数
+        # 1. 先删掉特定的复合参数 -Werror-implicit-function-declaration
+        find . -name "Makefile" -exec sed -i 's/-Werror-implicit-function-declaration//g' {} +
+        
+        # 2. 再清理可能残留的非法参数 (就是你刚才报错的那个)
+        find . -name "Makefile" -exec sed -i 's/-implicit-function-declaration//g' {} +
+        
+        # 3. 最后再删除独立的 -Werror
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
 
     - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
@@ -91,7 +96,7 @@ jobs:
         key: build-kernel-redmi6pro-lineageos
         max-size: 2G
 
-    - name: 开始编译 (禁用堆栈保护 + 忽略错误)
+    - name: 开始编译
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -100,13 +105,12 @@ jobs:
         # 1. 生成初始配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 2. 修改配置 (关键修复！)
+        # 2. 修改配置
         cd out
-        # 强制开启模块
         echo "CONFIG_MODULES=y" >> .config
         echo "CONFIG_MODULE_UNLOAD=y" >> .config
         
-        # 【关键】禁用导致报错的强堆栈保护
+        # 禁用堆栈保护 (防止编译器不支持报错)
         sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' .config
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> .config
         
