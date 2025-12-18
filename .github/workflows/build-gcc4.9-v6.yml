@@ -47,30 +47,31 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-    # ------------------- 修复后的步骤：下载 Wi-Fi 驱动 -------------------
-    - name: 下载 Wi-Fi 驱动源码 (LineageOS 16.0 / Android 9)
+    # ------------------- 修复版：下载 Wi-Fi 驱动 (使用 PixelExperience Pie 分支) -------------------
+    - name: 下载 Wi-Fi 驱动源码 (PixelExperience Pie / Android 9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 定义正确的分支：LineageOS 16.0 对应 Android 9
-        export WIFI_BRANCH="lineage-16.0"
+        # PixelExperience 使用 'pie' 作为 Android 9 的分支名
+        export WIFI_BRANCH="pie"
+        # 备选分支：如果 pie 不存在，尝试 arrow-9.x (需改下面的仓库地址为 ArrowOS)
         
-        echo "正在下载 Wi-Fi 驱动，使用 LineageOS 官方仓库，分支: $WIFI_BRANCH"
+        echo "正在下载 Wi-Fi 驱动，使用 PixelExperience 仓库，分支: $WIFI_BRANCH"
         
         # 创建 MSM8953 常见的驱动路径
         mkdir -p drivers/vendor/qcom/opensource/wlan
         cd drivers/vendor/qcom/opensource/wlan
 
-        # 使用 LineageOS 官方仓库，这些是永久存档，不会消失
+        # 使用 PixelExperience 仓库 (PE 团队虽然停止更新，但仓库作为只读存档依然可用且分支完整)
         # qcacld-3.0
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
+        git clone https://github.com/PixelExperience/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
         
         # fw-api
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
+        git clone https://github.com/PixelExperience/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
         
         # qca-wifi-host-cmn
-        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
-    # ---------------------------------------------------------------------
+        git clone https://github.com/PixelExperience/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
+    # ------------------------------------------------------------------------------------------------
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
