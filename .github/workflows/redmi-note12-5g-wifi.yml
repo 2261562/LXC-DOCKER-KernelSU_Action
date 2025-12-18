@@ -159,33 +159,51 @@ jobs:
             LLVM_IAS=1
                 
     - name: 准备打包内核 (AnyKernel3)
-      run: |       
+      run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
-        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
-        sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh        
         
+        # --- 关键修复 A: 彻底配置 AnyKernel3 参数 ---
+        # 默认的 anykernel.sh 只是个模板，必须把这些参数写死，否则无法识别
+        # 移除原文件的头部配置，写入针对 Note 12 5G (GKI) 的配置
+        
+        # 1. 清理杂文件
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        
+        # 2. 复制内核镜像
         if [ -f android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
-            echo "Found specified image: ${{ env.KERNEL_IMAGE_NAME }}"
             cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
         elif [ -f android-kernel/out/arch/arm64/boot/Image ]; then
-            echo "Found standard Image"
             cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
         else
             echo "Error: Kernel image not found!"
             exit 1
         fi
         
+        # 3. 如果有 dtbo 也复制进去
         if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
             cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
         fi
 
-        rm -rf AnyKernel3/.git* AnyKernel3/README.md
-        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        # 4. 修改 anykernel.sh (使用 sed 强行替换配置部分)
+        cd AnyKernel3
+        # 强制设置 block 分区路径 (针对高通平台)
+        sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
+        # 强制关闭机型检查
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        # 开启自动槽位检测
+        sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
+        # 关键：设置为 GKI 模式 (Image 格式)
+        sed -i 's/kernel.string=zImage/kernel.string=Image/g' anykernel.sh
         
+        # --- 关键修复 B: 手动打包 ZIP ---
+        # -r9 表示最高压缩率，-x 排除垃圾文件
+        # 这样生成的 zip 包，解压后直接就是 META-INF 和 Image，而不是套着一层文件夹
+        zip -r9 $GITHUB_WORKSPACE/kernel_workspace/Final-Kernel.zip * -x .git README.md
+
     - name: 上传内核
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.KERNEL_ZIP_NAME }}
-        path: kernel_workspace/AnyKernel3/*
+        # 这里的 path 必须指向刚才手动生成的 .zip 文件
+        path: kernel_workspace/Final-Kernel.zip
