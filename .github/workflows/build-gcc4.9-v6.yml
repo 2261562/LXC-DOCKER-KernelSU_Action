@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (LineageOS + Fix Struct)
+name: 老旧设备 GCC 4.9 (LineageOS + Fix Redefinition)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix Struct v7)
+    name: Build Kernel (Fix v8)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -49,8 +49,13 @@ jobs:
         # 强制开启 WiFi 模块配置
         echo "CONFIG_QCA_CLD_WLAN=m" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "CONFIG_QCACLD_WLAN_LMO=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        
+        # ⚠️ 【关键修改】开启原生命名空间支持，让内核自己定义结构体
+        echo "CONFIG_CGROUP_NS=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "CONFIG_USER_NS=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "CONFIG_NAMESPACES=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 补丁与修复 (补全结构体成员)
+    - name: 补丁与修复 (清理注入代码)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
@@ -59,8 +64,8 @@ jobs:
         if [ -f android-kernel/kernel/cgroup.c ]; then
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c
             
-            # ⚠️ 【关键修复】补全 struct cgroup_namespace 的定义，添加 user_ns
-            sed -i '/#include <linux\/cgroup.h>/a struct cgroup_namespace { atomic_t count; struct cgroup_root *root; struct user_namespace *user_ns; };' android-kernel/kernel/cgroup.c
+            # ⚠️ 【关键修改】删除了之前手动注入 struct cgroup_namespace 的命令
+            # 因为开启 CONFIG_CGROUP_NS 后，系统会自动定义它，手动写会冲突。
         fi
 
         # 禁用 GCC Wrapper
@@ -106,6 +111,10 @@ jobs:
         cd out
         echo "CONFIG_MODULES=y" >> .config
         echo "CONFIG_MODULE_UNLOAD=y" >> .config
+        
+        # 再次确保命名空间开启
+        echo "CONFIG_CGROUP_NS=y" >> .config
+        echo "CONFIG_USER_NS=y" >> .config
         
         # 禁用堆栈保护
         sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' .config
