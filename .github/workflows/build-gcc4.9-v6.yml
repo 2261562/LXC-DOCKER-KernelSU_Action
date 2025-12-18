@@ -1,30 +1,33 @@
-name: Redmi 6 Pro (Linux 4.9 + KernelSU)
+name: 老旧设备 GCC 4.9 (带 Wi-Fi 修复)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (4.9)
+    name: Build Kernel (GCC 4.9 + Wi-Fi)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
+    env:
+      # 在这里指定 Wi-Fi 驱动的分支。
+      # GCC 4.9 对应 Android 9 时代，建议使用 lineage-16.0
+      # 如果编译报错，可以尝试 lineage-15.1 或 lineage-17.1
+      WIFI_DRIVER_BRANCH: "lineage-16.0"
+
     steps:
     - uses: actions/checkout@v3
     
     - name: 环境变量配置
       run: |
-        # --- 核心修改：切换到 4.9 内核源码 ---
-        echo "KERNEL_SOURCE=https://github.com/darkhz/revvz_sakura" >> $GITHUB_ENV
-        # 使用 'ten' 分支 (Android 10/11 常用分支，基于 4.9)
-        echo "KERNEL_SOURCE_BRANCH=ten" >> $GITHUB_ENV
-        # 4.9 内核的配置文件名通常是 sakura_defconfig
-        echo "KERNEL_CONFIG=sakura_defconfig" >> $GITHUB_ENV
-        
-        # 沿用其他配置
+        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
+        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
+        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
     - name: 构建编译环境
       run: |
@@ -33,88 +36,166 @@ jobs:
         sudo ln -sf /usr/bin/python2 /usr/bin/python
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载 Clang 12 (Linux 4.9 推荐)
+    - name: 下载 Google 官方 GCC 4.9 工具链
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang-aosp
-        # 4.9 内核配合 Clang 12 效果最好，兼容性最佳
-        git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android12-release clang-aosp
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
-    - name: 下载内核源码 (Linux 4.9)
+    - name: 下载内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
-                  
+
+    # ------------------- 新增步骤：下载 Wi-Fi 驱动 -------------------
+    - name: 下载 Wi-Fi 驱动源码 (QCA CLD 3.0)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        echo "正在下载 Wi-Fi 驱动，分支: ${{ env.WIFI_DRIVER_BRANCH }}"
+        
+        # 创建标准的 Qualcomm 驱动目录结构
+        mkdir -p drivers/vendor/qcom/opensource/wlan
+        cd drivers/vendor/qcom/opensource/wlan
+
+        # 克隆 LineageOS 仓库 (深度为1，减少下载时间)
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
+    # ---------------------------------------------------------------
+
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        
-        # 4.9 内核不需要 runcpatch，因为已经原生支持 cgroup_ns
+        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 修复编译兼容性 (Clang)
+    - name: 添加 Runc 补丁
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
+        if [ -f android-kernel/kernel/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c               
+        fi
+        if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
+            $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
+        fi
+
+    - name: 修复 Runc 补丁与类型定义
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        if [ -f kernel/cgroup.c ]; then
+            sed -i '/#include <linux\/cgroup.h>/a \
+            struct cgroup_namespace {\
+                atomic_t count;\
+                struct cgroup_root *root;\
+            };' kernel/cgroup.c
+        fi
+
+    # ------------------- 新增步骤：整合 Wi-Fi 到构建系统 -------------------
+    - name: 挂载 Wi-Fi 驱动并修复构建脚本
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 1. 禁用 stack protector strong (防止旧代码报错)
-        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        
-        # 2. 修复 DTC
-        if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
-            sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
+        # 1. 禁用 GCC Wrapper (防止警告变错误)
+        if [ -f scripts/gcc-wrapper.py ]; then
+            echo '#!/usr/bin/env python' > scripts/gcc-wrapper.py
+            echo 'import os, sys' >> scripts/gcc-wrapper.py
+            echo 'os.execvp(sys.argv[1], sys.argv[1:])' >> scripts/gcc-wrapper.py
+            chmod +x scripts/gcc-wrapper.py
         fi
-        
-        # 3. 禁用 Werror (防止警告导致失败)
-        sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
+        
+        # 2. 修改 drivers/Makefile
+        if ! grep -q "qcacld-3.0" drivers/Makefile; then
+            echo "正在修改 drivers/Makefile..."
+            echo "obj-\$(CONFIG_QCA_CLD3_WLAN) += vendor/qcom/opensource/wlan/qcacld-3.0/" >> drivers/Makefile
+        fi
 
-    - name: 配置 KernelSU (v0.9.5)
+        # 3. 修改 drivers/Kconfig
+        if ! grep -q "qcacld-3.0/Kconfig" drivers/Kconfig; then
+            echo "正在修改 drivers/Kconfig..."
+            # 在 endmenu 之前插入 source
+            sed -i '$i source "drivers/vendor/qcom/opensource/wlan/qcacld-3.0/Kconfig"' drivers/Kconfig
+        fi
+
+        # 4. 在 defconfig 中启用 Wi-Fi 模块
+        # 注意：这里我们强制追加配置，确保它被开启
+        CONFIG_PATH=arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "" >> $CONFIG_PATH
+        echo "# Wi-Fi Configuration Override" >> $CONFIG_PATH
+        echo "CONFIG_QCA_CLD3_WLAN=m" >> $CONFIG_PATH
+        echo "CONFIG_QCA_CLD3_WLAN_SNOC=y" >> $CONFIG_PATH
+        # 确保基础网络栈开启
+        echo "CONFIG_CFG80211=y" >> $CONFIG_PATH
+        echo "CONFIG_MAC80211=y" >> $CONFIG_PATH
+    # -------------------------------------------------------------------
+
+    - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 4.9 内核可以使用 v0.9.5，兼容性良好
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+               
     - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-sakura-4.9
+        key: build-kernel-gcc49-wifi
         max-size: 2G
 
     - name: 开始编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r416183b/bin:$PATH
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
+        # 先生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 使用 Clang 编译，这是 4.9 内核的标准做法
+        # 开始编译，关闭无用警告
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
-            CC="ccache clang" \
-            CLANG_TRIPLE="aarch64-linux-gnu-" \
-            CROSS_COMPILE="aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-                
-    - name: 准备打包内核
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-unused-function -Wno-error"
+
+    - name: 准备打包内核 (包含 Wi-Fi 模块)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
+        
+        # 基础 AnyKernel3 配置
         sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
         sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
         
-        # 4.9 内核也是 Image.gz-dtb
+        # 开启模块刷入功能 (尝试启用 AnyKernel3 的自动模块功能)
+        sed -i 's/do.modules=0/do.modules=1/g' AnyKernel3/anykernel.sh
+        
+        # 复制内核镜像
         cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         
-        rm -rf AnyKernel3/.git* AnyKernel3/README.md
-        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        # ----------------- 提取并放置 Wi-Fi 模块 -----------------
+        echo "正在提取 wlan.ko..."
+        
+        # 创建 vendor 模块目录结构
+        # AnyKernel3 默认会将 modules/vendor/lib/modules 下的文件推送到设备的 /vendor/lib/modules
+        mkdir -p AnyKernel3/modules/vendor/lib/modules
+        
+        # 搜索生成的 wlan.ko (可能名为 wlan.ko 或 qca_cld3_wlan.ko)
+        find android-kernel/out -name "wlan.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+        find android-kernel/out -name "qca_cld3_wlan.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+        
+        # 检查是否成功复制
+        ls -R AnyKernel3/modules/
+        # -------------------------------------------------------
+
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/patch
     
     - name: 打包并上传
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.KERNEL_ZIP_NAME }}
+        name: ${{ env.KERNEL_ZIP_NAME }}_WiFi-Fixed
         path: kernel_workspace/AnyKernel3/*
