@@ -1,11 +1,10 @@
-name: Redmi 6 Pro Final (GCC 4.9 - No RuncPatch)
+name: Redmi 6 Pro (Linux 4.9 + KernelSU)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (GCC 4.9)
-    # 必须使用 22.04 以支持 Python 2
+    name: Build Kernel (4.9)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -14,37 +13,34 @@ jobs:
     
     - name: 环境变量配置
       run: |
-        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
+        # --- 核心修改：切换到 4.9 内核源码 ---
+        echo "KERNEL_SOURCE=https://github.com/darkhz/revvz_sakura" >> $GITHUB_ENV
+        # 使用 'ten' 分支 (Android 10/11 常用分支，基于 4.9)
+        echo "KERNEL_SOURCE_BRANCH=ten" >> $GITHUB_ENV
+        # 4.9 内核的配置文件名通常是 sakura_defconfig
+        echo "KERNEL_CONFIG=sakura_defconfig" >> $GITHUB_ENV
+        
+        # 沿用其他配置
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
-        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
+        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
         cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
         cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
     - name: 构建编译环境
       run: |
         sudo apt-get update
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
-        
-        # 建立 python 软连接
         sudo ln -sf /usr/bin/python2 /usr/bin/python
-        
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载 Google 官方 GCC 4.9 工具链 (Android 9)
+    - name: 下载 Clang 12 (Linux 4.9 推荐)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        
-        # 下载 64位 GCC 4.9
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
-        
-        # 下载 32位 GCC 4.9
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
+        mkdir clang-aosp
+        # 4.9 内核配合 Clang 12 效果最好，兼容性最佳
+        git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android12-release clang-aosp
     
-    - name: 下载内核源码
+    - name: 下载内核源码 (Linux 4.9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
@@ -55,61 +51,53 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-    
-    # 注意：删除了 "添加 Runc 补丁" 步骤
-    # Linux 4.9 原生支持 cgroup namespace，打补丁会导致结构体冲突
+        
+        # 4.9 内核不需要 runcpatch，因为已经原生支持 cgroup_ns
 
-    - name: 修复编译报错 (Wrapper & Warnings)
+    - name: 修复编译兼容性 (Clang)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 1. 暴力替换 gcc-wrapper.py
-        # 高通内核的这个脚本会把警告变成错误，直接废除它
-        if [ -f scripts/gcc-wrapper.py ]; then
-            echo '#!/usr/bin/env python' > scripts/gcc-wrapper.py
-            echo 'import os' >> scripts/gcc-wrapper.py
-            echo 'import sys' >> scripts/gcc-wrapper.py
-            echo 'os.execvp(sys.argv[1], sys.argv[1:])' >> scripts/gcc-wrapper.py
-            chmod +x scripts/gcc-wrapper.py
-        fi
+        # 1. 禁用 stack protector strong (防止旧代码报错)
+        sed -i "s/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g" arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         
-        # 2. 修复 dtc 兼容性
+        # 2. 修复 DTC
         if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
-
-        # 3. 再次确保 Makefile 中没有残留的 -Werror
+        
+        # 3. 禁用 Werror (防止警告导致失败)
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
 
-    - name: 配置 KernelSU
+    - name: 配置 KernelSU (v0.9.5)
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # GCC 4.9 老内核建议使用 v0.9.5，兼容性最好
+        # 4.9 内核可以使用 v0.9.5，兼容性良好
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-               
+
     - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-redmi6pro-gcc49
+        key: build-kernel-sakura-4.9
         max-size: 2G
 
-    - name: 开始编译内核 (GCC)
+    - name: 开始编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
+        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/clang-r416183b/bin:$PATH
         
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
+        # 使用 Clang 编译，这是 4.9 内核的标准做法
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            KCFLAGS="-Wno-unused-function -Wno-error"
+            CC="ccache clang" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
                 
     - name: 准备打包内核
       run: |
@@ -119,7 +107,7 @@ jobs:
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
         sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
         
-        # 复制内核镜像
+        # 4.9 内核也是 Image.gz-dtb
         cp android-kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
         
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
