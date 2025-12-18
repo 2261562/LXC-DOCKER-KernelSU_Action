@@ -7,21 +7,21 @@ jobs:
     name: Build Kernel (GCC 4.9)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
+      KERNEL_SOURCE_BRANCH: sakura-p-oss
+      KERNEL_CONFIG: sakura-perf_defconfig
+      KERNEL_ZIP_NAME: sakura_lxc-docker-kernel_20251217
+      KERNEL_IMAGE_NAME: Image.gz-dtb
+      ENABLE_KVM: false
+      ENABLE_LXC_DOCKER: true
+      LLVM_CONFIG: n
+      ENABLE_KERNELSU: true
+      KERNELSU_TAG: main
     
     steps:
     - uses: actions/checkout@v3
     
-    - name: 环境变量配置
-      run: |
-        cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
-        cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
-        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
 
     - name: 构建编译环境
       run: |
