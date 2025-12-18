@@ -1,4 +1,4 @@
-name: Redmi 6 Pro (Sakura) - LineageOS 官方内核
+name: Redmi 6 Pro (Sakura) - LineageOS 16.0 修正版
 on:
   workflow_dispatch:
 
@@ -30,14 +30,11 @@ jobs:
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
-    # ------------------- 核心修改：使用 LineageOS 官方内核 -------------------
     - name: 下载 LineageOS 官方内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        # 直接使用 LineageOS 官方维护的 msm8953 源码，自带 Wi-Fi 驱动
         echo "正在下载 LineageOS android_kernel_xiaomi_msm8953 (branch: lineage-16.0)..."
         git clone https://github.com/LineageOS/android_kernel_xiaomi_msm8953.git -b lineage-16.0 android-kernel --depth=1
-    # -----------------------------------------------------------------------
 
     - name: 修复构建脚本 (GCC / DTC)
       run: |
@@ -51,10 +48,8 @@ jobs:
             chmod +x scripts/gcc-wrapper.py
         fi
         
-        # 2. 修复 DTC (Device Tree Compiler) 兼容性
-        # 防止 yylloc 多重定义错误
+        # 2. 修复 DTC 兼容性 (-fcommon)
         sed -i 's/HOSTCFLAGS	+=/HOSTCFLAGS	+= -fcommon /g' scripts/dtc/Makefile
-        # 双重保险
         if ! grep -q "-fcommon" scripts/dtc/Makefile; then
              sed -i '1s/^/HOSTCFLAGS += -fcommon\n/' scripts/dtc/Makefile
         fi
@@ -67,8 +62,8 @@ jobs:
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        # 注意：4.9 内核可能需要旧版 KSU 或手动集成，这里尝试标准脚本
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }} || echo "KernelSU setup failed, continuing..."
+        # 尝试集成 KSU，如果不兼容会自动跳过
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }} || echo "KernelSU setup failed, continuing without it..."
                
     - name: 设置 ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -81,17 +76,36 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
-        # 使用 sakura_defconfig (LineageOS 标准配置)
-        # 如果你的 config.env 指定了其他的，这里强制用官方的以保证成功
-        make O=out ARCH=arm64 sakura_defconfig
+        # --------------- 关键修改：智能 Defconfig 选择 ---------------
+        # 1. 优先尝试 msm8953_defconfig (通用配置)
+        TARGET_CONFIG="msm8953_defconfig"
         
-        # 强制开启 Wi-Fi 模块 (通常默认已开启，这里作为双重保险)
-        # LineageOS 源码中，Wi-Fi 驱动通常位于 drivers/staging/qcacld-3.0
+        # 2. 检查文件是否存在，如果不存在则搜索可用的配置
+        if [ ! -f "arch/arm64/configs/$TARGET_CONFIG" ]; then
+            echo "警告：找不到 $TARGET_CONFIG，正在搜索可用配置..."
+            ls arch/arm64/configs/ | grep 8953
+            # 尝试自动切换到找到的第一个 msm8953 相关配置
+            FOUND_CONFIG=$(ls arch/arm64/configs/ | grep "msm8953.*defconfig" | head -n 1)
+            if [ ! -z "$FOUND_CONFIG" ]; then
+                TARGET_CONFIG=$FOUND_CONFIG
+                echo "自动切换到配置: $TARGET_CONFIG"
+            else
+                echo "错误：找不到任何 msm8953 相关的配置文件！"
+                ls arch/arm64/configs/
+                exit 1
+            fi
+        fi
+        
+        echo "使用配置文件: $TARGET_CONFIG"
+        make O=out ARCH=arm64 $TARGET_CONFIG
+        # ---------------------------------------------------------
+        
+        # 强制开启 Wi-Fi 模块编译
         script_config="out/.config"
-        # 启用模块
         sed -i 's/# CONFIG_QCA_CLD3_WLAN is not set/CONFIG_QCA_CLD3_WLAN=m/' $script_config
-        # 如果已经存在但被设为 y，改为 m (推荐) 或者保持 y
-        # 通常 LineageOS 默认配置已经处理好了，这里我们直接编译
+        # 确保依赖项开启
+        sed -i 's/# CONFIG_CFG80211 is not set/CONFIG_CFG80211=y/' $script_config
+        sed -i 's/# CONFIG_MAC80211 is not set/CONFIG_MAC80211=y/' $script_config
 
         echo "开始编译..."
         make -j$(nproc --all) \
@@ -119,12 +133,11 @@ jobs:
         echo "正在提取 Wi-Fi 模块..."
         mkdir -p AnyKernel3/modules/vendor/lib/modules
         
-        # 在 LineageOS 源码中，编译出的模块通常叫 wlan.ko
-        # 使用 find 命令全盘搜索，确保找到它
-        find android-kernel/out -name "wlan.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
-        find android-kernel/out -name "qcacld-3.0.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+        # 搜索并复制所有 ko 模块
+        find android-kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
         
-        echo "模块列表："
+        # 打印模块列表以供检查
+        echo "已打包模块："
         ls -R AnyKernel3/modules/
         # -----------------------------------------------------
 
@@ -133,5 +146,5 @@ jobs:
     - name: 打包并上传
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ env.KERNEL_ZIP_NAME }}_LineageOS_Official
+        name: ${{ env.KERNEL_ZIP_NAME }}_LineageOS16
         path: kernel_workspace/AnyKernel3/*
