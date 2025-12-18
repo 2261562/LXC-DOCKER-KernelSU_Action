@@ -75,37 +75,41 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
-        
-        # --------------- 关键修改：智能 Defconfig 选择 ---------------
-        # 1. 优先尝试 msm8953_defconfig (通用配置)
+          
+        # --------------- 智能 Defconfig 选择 ---------------
         TARGET_CONFIG="msm8953_defconfig"
         
-        # 2. 检查文件是否存在，如果不存在则搜索可用的配置
         if [ ! -f "arch/arm64/configs/$TARGET_CONFIG" ]; then
             echo "警告：找不到 $TARGET_CONFIG，正在搜索可用配置..."
-            ls arch/arm64/configs/ | grep 8953
-            # 尝试自动切换到找到的第一个 msm8953 相关配置
             FOUND_CONFIG=$(ls arch/arm64/configs/ | grep "msm8953.*defconfig" | head -n 1)
             if [ ! -z "$FOUND_CONFIG" ]; then
                 TARGET_CONFIG=$FOUND_CONFIG
                 echo "自动切换到配置: $TARGET_CONFIG"
             else
                 echo "错误：找不到任何 msm8953 相关的配置文件！"
-                ls arch/arm64/configs/
                 exit 1
             fi
         fi
         
-        echo "使用配置文件: $TARGET_CONFIG"
+        echo "生成初始配置: $TARGET_CONFIG"
         make O=out ARCH=arm64 $TARGET_CONFIG
+        
         # ---------------------------------------------------------
         
-        # 强制开启 Wi-Fi 模块编译
+        # 强制开启 Wi-Fi 模块配置
         script_config="out/.config"
+        
+        echo "正在修改 .config 强制开启 Wi-Fi..."
+        # 1. 开启 QCA_CLD3
         sed -i 's/# CONFIG_QCA_CLD3_WLAN is not set/CONFIG_QCA_CLD3_WLAN=m/' $script_config
-        # 确保依赖项开启
+        # 2. 开启 802.11 协议栈 (解决你的报错来源)
         sed -i 's/# CONFIG_CFG80211 is not set/CONFIG_CFG80211=y/' $script_config
         sed -i 's/# CONFIG_MAC80211 is not set/CONFIG_MAC80211=y/' $script_config
+        
+        # 【核心修复】: 自动处理新增的依赖项
+        # 这一步会自动回答 "Minstrel [Y/n/?] (NEW)" 这种问题，防止报错
+        echo "正在更新配置依赖 (olddefconfig)..."
+        make O=out ARCH=arm64 olddefconfig
 
         echo "开始编译..."
         make -j$(nproc --all) \
