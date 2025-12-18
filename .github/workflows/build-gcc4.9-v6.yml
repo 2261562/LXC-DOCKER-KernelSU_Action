@@ -1,10 +1,10 @@
-name: 老旧设备 GCC 4.9 (LineageOS + Fix Flags)
+name: 老旧设备 GCC 4.9 (LineageOS + Fix Struct)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Fix Flags v6)
+    name: Build Kernel (Fix Struct v7)
     runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -50,7 +50,7 @@ jobs:
         echo "CONFIG_QCA_CLD_WLAN=m" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
         echo "CONFIG_QCACLD_WLAN_LMO=y" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
 
-    - name: 补丁与修复 (精确修复编译参数)
+    - name: 补丁与修复 (补全结构体成员)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
@@ -58,7 +58,9 @@ jobs:
         chmod a+x $GITHUB_WORKSPACE/runcpatch.sh
         if [ -f android-kernel/kernel/cgroup.c ]; then
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup.c
-            sed -i '/#include <linux\/cgroup.h>/a struct cgroup_namespace { atomic_t count; struct cgroup_root *root; };' android-kernel/kernel/cgroup.c
+            
+            # ⚠️ 【关键修复】补全 struct cgroup_namespace 的定义，添加 user_ns
+            sed -i '/#include <linux\/cgroup.h>/a struct cgroup_namespace { atomic_t count; struct cgroup_root *root; struct user_namespace *user_ns; };' android-kernel/kernel/cgroup.c
         fi
 
         # 禁用 GCC Wrapper
@@ -74,14 +76,9 @@ jobs:
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # ⚠️ 【关键修复】精确处理 Werror，防止产生非法参数
-        # 1. 先删掉特定的复合参数 -Werror-implicit-function-declaration
+        # 精确处理 Werror
         find . -name "Makefile" -exec sed -i 's/-Werror-implicit-function-declaration//g' {} +
-        
-        # 2. 再清理可能残留的非法参数 (就是你刚才报错的那个)
         find . -name "Makefile" -exec sed -i 's/-implicit-function-declaration//g' {} +
-        
-        # 3. 最后再删除独立的 -Werror
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
 
     - name: 配置 KernelSU
@@ -110,7 +107,7 @@ jobs:
         echo "CONFIG_MODULES=y" >> .config
         echo "CONFIG_MODULE_UNLOAD=y" >> .config
         
-        # 禁用堆栈保护 (防止编译器不支持报错)
+        # 禁用堆栈保护
         sed -i 's/CONFIG_CC_STACKPROTECTOR_STRONG=y/# CONFIG_CC_STACKPROTECTOR_STRONG is not set/g' .config
         echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> .config
         
