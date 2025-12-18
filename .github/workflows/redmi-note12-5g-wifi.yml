@@ -79,12 +79,19 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 1. sm5602_fg.c 缺少 int 类型 (Clang 18 报错)
+        # --- 1. 修复 icnss2 驱动报错 (本次新增) ---
+        # 错误: a function declaration without a prototype is deprecated
+        if [ -f drivers/soc/qcom/icnss2/main.c ]; then
+            # 精准匹配并替换为 (void)
+            sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
+        fi
+        
+        # --- 2. 修复 sm5602_fg.c 语法错误 ---
         if [ -f drivers/power/supply/sm5602_fg.c ]; then
             sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
         fi
         
-        # 2. 修复 Focaltech 触控缺文件 (GKI 常见问题)
+        # --- 3. 修复 Focaltech 触控驱动缺文件 ---
         if [ -d drivers/input/touchscreen/FT3519T ]; then
             touch drivers/input/touchscreen/FT3519T/fw_sample.i
             echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
@@ -94,13 +101,15 @@ jobs:
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
         
-        # 3. 禁用 Werror (关键！)
+        # --- 4. 关键：全局禁用严格检查 ---
+        # 必须禁用 strict-prototypes，否则几百个旧文件都会报错
+        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=unused-variable" >> Makefile
         
-        # 4. 放宽栈大小检查
+        # --- 5. 放宽栈大小检查 ---
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
 
     - name: 开启 LXC 和 Docker 配置

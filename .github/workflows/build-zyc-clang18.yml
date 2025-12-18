@@ -40,11 +40,12 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
     
-    - name: ⚙️ 合并 GKI 配置文件
+    - name: ⚙️ 配置补丁并合并
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         mkdir -p out
-
+        
+        # 确定使用的基础配置
         if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
             VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
         else
@@ -54,9 +55,12 @@ jobs:
         BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
         
         echo "正在合并配置: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
-        
         export ARCH=arm64
         scripts/kconfig/merge_config.sh -m $BASE_DEFCONFIG $VENDOR_FRAGMENT
+        
+        # 强制开启 WiFi 相关配置 (确保在合并后应用，防止被覆盖)
+        echo "CONFIG_WLAN=y" >> .config
+        echo "CONFIG_QCACLD_WLAN=m" >> .config
         
         mv .config out/
         make mrproper
@@ -153,8 +157,12 @@ jobs:
             cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
         fi
 
+        # 提取并加入内核模块
+        mkdir -p AnyKernel3/modules/vendor/lib/modules
+        find android-kernel/out -name "*.ko" -exec cp {} AnyKernel3/modules/vendor/lib/modules/ \;
+
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
-        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        rm -rf AnyKernel3/ramdisk AnyKernel3/patch
         
     - name: 上传内核
       uses: actions/upload-artifact@v4
