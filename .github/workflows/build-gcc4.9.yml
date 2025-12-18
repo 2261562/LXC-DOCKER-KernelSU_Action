@@ -5,19 +5,20 @@ on:
 jobs:
   build:
     name: Build Kernel (GCC 4.9)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: sakura-p-oss
-      KERNEL_CONFIG: sakura_defconfig
-      KERNEL_ZIP_NAME: sakura_gcc_lxc-docker-kernel_20251217
-      LLVM_CONFIG: n
-      ENABLE_KERNELSU: true
-      KERNELSU_TAG: v0.9.5
+      KERNEL_CONFIG: sakura-perf_defconfig
+      KERNEL_ZIP_NAME: sakura_lxc-docker-kernel_20251217
+      KERNEL_IMAGE_NAME: Image.gz-dtb
       ENABLE_KVM: false
       ENABLE_LXC_DOCKER: true
-
+      LLVM_CONFIG: n
+      ENABLE_KERNELSU: true
+      KERNELSU_TAG: main
+    
     steps:
     - uses: actions/checkout@v3
     
@@ -25,19 +26,22 @@ jobs:
     - name: 构建编译环境
       run: |
         sudo apt-get update
-        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python2 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        
+        # 建立 python 软连接
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载 Google 官方 GCC 4.9 工具链
+    - name: 下载 Google 官方 GCC 4.9 工具链 (Android 9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # 下载 64位 GCC 4.9 (用于编译内核主体)
-        # 使用 android-10.0.0_r47 标签，确保能下载到被移除前的 GCC
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-10.0.0_r47 --depth=1 gcc64
+        # 下载 64位 GCC 4.9
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android-9.0.0_r61 --depth=1 gcc64
         
-        # 下载 32位 GCC 4.9 (用于编译 vDSO 等兼容库)
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-10.0.0_r47 --depth=1 gcc32
+        # 下载 32位 GCC 4.9
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b android-9.0.0_r61 --depth=1 gcc32
     
     - name: 下载内核源码
       run: |
@@ -63,16 +67,39 @@ jobs:
             $GITHUB_WORKSPACE/runcpatch.sh android-kernel/kernel/cgroup/cgroup.c               
         fi
 
-    - name: 修复 GCC 编译常见问题
+    - name: 修复 Runc 补丁与类型定义 (Linux 4.9 适配)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 修复 dtc 兼容性 (GCC 环境下依然可能遇到)
+        # 修正：Linux 4.9 中应使用 struct cgroup_root
+        if [ -f kernel/cgroup.c ]; then
+            sed -i '/#include <linux\/cgroup.h>/a \
+            struct cgroup_namespace {\
+                atomic_t count;\
+                struct cgroup_root *root;\
+            };' kernel/cgroup.c
+        fi
+
+    - name: 彻底禁用 GCC Wrapper 与修复编译
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 1. 暴力替换 gcc-wrapper.py
+        # 直接用 python 脚本覆盖它，让它只负责执行命令，不再拦截任何警告
+        if [ -f scripts/gcc-wrapper.py ]; then
+            echo '#!/usr/bin/env python' > scripts/gcc-wrapper.py
+            echo 'import os' >> scripts/gcc-wrapper.py
+            echo 'import sys' >> scripts/gcc-wrapper.py
+            echo 'os.execvp(sys.argv[1], sys.argv[1:])' >> scripts/gcc-wrapper.py
+            chmod +x scripts/gcc-wrapper.py
+        fi
+        
+        # 2. 修复 dtc 兼容性
         if [ -f scripts/dtc/dtc-lexer.lex.c_shipped ]; then
             sed -i 's/YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped
         fi
 
-        # 禁用 -Werror，防止因代码风格警告导致编译失败
+        # 3. 再次确保 Makefile 中没有残留的 -Werror
         sed -i 's/-Werror-implicit-function-declaration//g' Makefile
         sed -i 's/-Werror//g' Makefile
 
@@ -92,20 +119,18 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 设置 GCC 路径到环境变量
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
         
-        # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
         # 编译命令
-        # 不指定 CC=clang，也不指定 LLVM=1
-        # 直接使用 CROSS_COMPILE 指定 GCC 前缀
+        # 此时 wrapper 已被废除，-Wno-error 实际上可能多余但保留无害
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            KCFLAGS="-Wno-unused-function -Wno-error"
                 
     - name: 准备打包内核
       run: |

@@ -144,7 +144,7 @@ jobs:
         path: kernel_workspace/AnyKernel3/*
 
     - name: 上传dtbo镜像
-      if: env.DTBO_EXSIT == 'true' && env.NEED == 'true'
+      if: env.DTBO_EXIST == 'true' && env.NEED == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: dtbo-image

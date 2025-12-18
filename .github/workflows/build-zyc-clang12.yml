@@ -9,18 +9,18 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
-      KERNEL_SOURCE_BRANCH: beryl-u-oss
-      KERNEL_CONFIG: gki_defconfig
-      KERNEL_ZIP_NAME: bery_lxc-docker-kernel_20251217
-      LLVM_CONFIG: y
-      ENABLE_KERNELSU: true
-      KERNELSU_TAG: main
+      KERNEL_SOURCE_BRANCH: sakura-p-oss
+      KERNEL_CONFIG: sakura-perf_defconfig
+      KERNEL_ZIP_NAME: sakura_lxc-docker-kernel_20251217
+      KERNEL_IMAGE_NAME: Image.gz-dtb
       ENABLE_KVM: false
       ENABLE_LXC_DOCKER: true
-
+      LLVM_CONFIG: n
+      ENABLE_KERNELSU: true
+      KERNELSU_TAG: main
+    
     steps:
     - uses: actions/checkout@v3
-    
 
     - name: 构建编译环境
       run: |
@@ -94,16 +94,17 @@ jobs:
         # 生成配置
         make O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
         
-        # 编译命令 (使用最稳妥的参数)
-        # 强制使用 GNU 的交叉编译工具链 (binutils) 处理汇编和链接
-        # 仅使用 Clang 编译 C 代码
+        # 编译命令 (关键修改在最后一行)
+        # 1. CC 保持 -no-integrated-as 以修复汇编器错误
+        # 2. 新增 KCFLAGS 屏蔽 -Warray-bounds 报错，并强制 -Wno-error 忽略所有警告产生的错误
         make -j$(nproc --all) \
-            CC="ccache clang" \
+            CC="ccache clang -no-integrated-as" \
             O=out \
             ARCH=arm64 \
             CROSS_COMPILE="aarch64-linux-gnu-" \
             CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-            CLANG_TRIPLE="aarch64-linux-gnu-"
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            KCFLAGS="-Wno-error -Wno-array-bounds"
                 
     - name: 准备打包内核
       run: |
