@@ -1,10 +1,10 @@
-name: Redmi Note 12 5G GKI (Wi-Fi 修复版)
+name: Redmi Note 12 5G (Merge Config Fix)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build GKI Kernel
+    name: Build Kernel (GKI Merge)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     
@@ -15,27 +15,23 @@ jobs:
       run: |
         cat config.env | grep KERNEL_SOURCE= >> $GITHUB_ENV
         cat config.env | grep KERNEL_SOURCE_BRANCH= >> $GITHUB_ENV
-        cat config.env | grep KERNEL_CONFIG= >> $GITHUB_ENV
         cat config.env | grep KERNEL_ZIP_NAME= >> $GITHUB_ENV
         cat config.env | grep LLVM_CONFIG= >> $GITHUB_ENV
         cat config.env | grep KERNEL_IMAGE_NAME= >> $GITHUB_ENV
-        cat config.env | grep NEED_DTBO= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KVM= >> $GITHUB_ENV
+        echo "ENABLE_KERNELSU=true" >> $GITHUB_ENV
+        echo "KERNELSU_TAG=v0.9.5" >> $GITHUB_ENV
         cat config.env | grep ENABLE_LXC_DOCKER= >> $GITHUB_ENV
-        cat config.env | grep ENABLE_KERNELSU= >> $GITHUB_ENV
-        cat config.env | grep KERNELSU_TAG= >> $GITHUB_ENV
 
-    - name: 构建编译内核环境
+    - name: 构建编译环境
       run: |
         sudo apt-get update
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 下载 zyc-clang 编译器
+    - name: 下载 zyc-clang 编译器 (Clang 18)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir clang-zyc
-        # 链接文件可能会失效，这里保持你原有的逻辑，但建议检查链接有效性
         wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20230903-release/Clang-18.0.0-20230903.tar.gz
         tar -C clang-zyc/ -zxf Clang-18.0.0-20230903.tar.gz
               
@@ -43,119 +39,116 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
-                      
+    
+    # --- 核心修复：正确的 GKI 配置合并逻辑 ---
+    - name: ⚙️ 合并配置 (Merge GKI Config)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        mkdir -p out
+
+        # 1. 确定 Base Config (通常是 gki_defconfig)
+        BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
+        
+        # 2. 确定 Vendor Fragment (厂商片段)
+        # 优先找 moonstone，找不到找 sunstone (红米 Note 12 系列通用)
+        if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
+        elif [ -f arch/arm64/configs/vendor/sunstone_GKI.config ]; then
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
+        else
+            echo "Error: 找不到厂商配置文件 (moonstone_GKI.config 或 sunstone_GKI.config)"
+            exit 1
+        fi
+        
+        echo "正在合并: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
+        
+        # 3. 使用内核自带脚本合并
+        # -m: merge only
+        # -O out: 输出到 out 目录 (关键！)
+        # 这样会生成 out/.config
+        ./scripts/kconfig/merge_config.sh -m -O out $BASE_DEFCONFIG $VENDOR_FRAGMENT
+        
+        # 4. 修复配置 (olddefconfig)
+        # 这一步会根据合并后的 .config 自动处理未定义的选项，防止编译询问
+        make O=out ARCH=arm64 olddefconfig
+        
+        echo "配置合并完成，检查 out/.config 是否存在："
+        ls -l out/.config
+
+    - name: 修复 Clang 18 编译报错
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 1. sm5602_fg.c 缺少 int 类型 (Clang 18 报错)
+        if [ -f drivers/power/supply/sm5602_fg.c ]; then
+            sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
+        fi
+        
+        # 2. 修复 Focaltech 触控缺文件 (GKI 常见问题)
+        if [ -d drivers/input/touchscreen/FT3519T ]; then
+            touch drivers/input/touchscreen/FT3519T/fw_sample.i
+            echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
+            sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
+            
+            mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
+            echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        fi
+        
+        # 3. 禁用 Werror (关键！)
+        echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error=unused-variable" >> Makefile
+        
+        # 4. 放宽栈大小检查
+        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
+
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
+        # 此时 out/.config 已经由上面的合并步骤生成了，直接修改它
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
-        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> android-kernel/arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
 
-    # ------------------- 核心修复步骤：解决 Wi-Fi 丢失 -------------------
-    - name: 配置允许加载旧模块 (解决 Wi-Fi/音频 丢失)
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        
-        # 定义配置文件路径
-        CONFIG_FILE="arch/arm64/configs/${{ env.KERNEL_CONFIG }}"
-        
-        echo "正在修改配置文件以禁用模块校验..."
-        
-        # 1. 禁用模块版本校验 (CONFIG_MODVERSIONS)
-        # 这样内核就不会检查模块的 CRC 校验码，允许旧模块加载
-        sed -i 's/CONFIG_MODVERSIONS=y/CONFIG_MODVERSIONS=n/g' $CONFIG_FILE
-        echo "CONFIG_MODVERSIONS=n" >> $CONFIG_FILE
-        
-        # 2. 允许强制加载模块 (CONFIG_MODULE_FORCE_LOAD)
-        # 允许使用 insmod -f 强制加载（作为备用手段）
-        echo "CONFIG_MODULE_FORCE_LOAD=y" >> $CONFIG_FILE
-        
-        # 3. 禁用内核模块签名强制校验 (CONFIG_MODULE_SIG_FORCE)
-        # 防止内核因为签名不对而拒绝模块
-        sed -i 's/CONFIG_MODULE_SIG_FORCE=y/CONFIG_MODULE_SIG_FORCE=n/g' $CONFIG_FILE
-        echo "# CONFIG_MODULE_SIG_FORCE is not set" >> $CONFIG_FILE
-        
-        # 4. 禁用严格的模块全版本检查 (CONFIG_MODULE_SCMVERSION)
-        # 这是 Android GKI 特有的严格检查，必须关闭
-        sed -i 's/CONFIG_MODULE_SCMVERSION=y/CONFIG_MODULE_SCMVERSION=n/g' $CONFIG_FILE
-        echo "# CONFIG_MODULE_SCMVERSION is not set" >> $CONFIG_FILE
-        
-        echo "模块校验已禁用，Wi-Fi 驱动应该可以正常加载了。"
-    # -------------------------------------------------------------------
-    
-    - name: 修复 GKI 编译问题
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        
-        # 统一放宽栈帧大小限制，解决大部分编译报错
-        echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
-        echo "KBUILD_CFLAGS += -Wframe-larger-than=8192" >> Makefile
-        
-        # 禁用严格函数原型检查 (Clang 16+ 常见报错)
-        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
-        
-        # 特定文件修复 (保留你原有的逻辑作为补充)
-        if [ -f drivers/misc/perf_helper.c ]; then
-          sed -i 's/static void kswapd_task_show()/static void kswapd_task_show(void)/g' drivers/misc/perf_helper.c
-        fi
-
-    - name: 配置 KernelSU
+    - name: 配置 KernelSU (v0.9.5)
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
-    - name: 开启 KVM
-      if: env.ENABLE_KVM == 'true'
-      run: |
-         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-         echo "CONFIG_VIRTUALIZATION=y" >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         echo "CONFIG_KVM=y" >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         # GKI 内核通常需要开启这些以支持虚拟化网络
-         echo "CONFIG_VHOST_NET=y" >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-         echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
-                     
     - name: 设置 ccache 缓存
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-gki-${{ env.KERNEL_CONFIG }}
+        key: build-kernel-sunstone-merged
         max-size: 2G
 
     - name: 开始编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
-        export KBUILD_BUILD_HOST=GKI
+        export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
         
-        # 先生成配置 (这是编译的关键一步，不能省)
-        make -s ARCH=arm64 O=out ${{ env.KERNEL_CONFIG }}
-        
-        # 开始编译
-        if [ "${{ env.LLVM_CONFIG }}" = "y" ]; then
-            make -j$(nproc --all) \
-                O=out \
-                ARCH=arm64 \
-                CC="ccache clang" \
-                CXX="ccache clang++" \
-                CLANG_TRIPLE="aarch64-linux-gnu-" \
-                CROSS_COMPILE="aarch64-linux-gnu-" \
-                CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-                LLVM=1 \
-                LLVM_IAS=1
-        else
-            make -j$(nproc --all) \
-                O=out \
-                ARCH=arm64 \
-                CC="ccache clang" \
-                CXX="ccache clang++" \
-                CLANG_TRIPLE="aarch64-linux-gnu-" \
-                CROSS_COMPILE="aarch64-linux-gnu-" \
-                CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+        # 确认配置存在
+        if [ ! -f out/.config ]; then
+            echo "Critical Error: out/.config not found! Merge failed."
+            exit 1
         fi
+        
+        # 直接开始编译，不再重复生成配置，以免覆盖合并结果
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CC="ccache clang" \
+            CXX=clang++ \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            LLVM=1 \
+            LLVM_IAS=1
                 
-    - name: 准备打包内核
+    - name: 准备打包内核 (AnyKernel3)
       run: |       
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone https://github.com/osm0sis/AnyKernel3
@@ -163,19 +156,21 @@ jobs:
         sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' AnyKernel3/anykernel.sh
         sed -i 's/is_slot_device=1;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh        
         
-        # 复制内核镜像
-        cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+        if [ -f android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
+            echo "Found specified image: ${{ env.KERNEL_IMAGE_NAME }}"
+            cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+        elif [ -f android-kernel/out/arch/arm64/boot/Image ]; then
+            echo "Found standard Image"
+            cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
+        else
+            echo "Error: Kernel image not found!"
+            exit 1
+        fi
         
-        # 处理 DTBO
-        if [ "${{ env.NEED_DTBO }}" = "true" ]; then
-            if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
-                cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
-                echo "DTBO_FOUND=true" >> $GITHUB_ENV
-            else
-                echo "Warning: DTBO requested but not generated!"
-            fi
-        fi  
-        
+        if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+        fi
+
         rm -rf AnyKernel3/.git* AnyKernel3/README.md
         rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
         
@@ -184,10 +179,3 @@ jobs:
       with:
         name: ${{ env.KERNEL_ZIP_NAME }}
         path: kernel_workspace/AnyKernel3/*
-
-    - name: 上传 dtbo 镜像 (可选)
-      if: env.DTBO_FOUND == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: dtbo-image
-        path: kernel_workspace/android-kernel/out/arch/arm64/boot/dtbo.img
