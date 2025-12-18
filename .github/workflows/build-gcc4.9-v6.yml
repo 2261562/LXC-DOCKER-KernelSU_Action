@@ -47,22 +47,30 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-    # ------------------- 核心修复：下载适配 MSM8953 的 Wi-Fi 驱动 -------------------
-    - name: 下载 Wi-Fi 驱动 (Crdroid 9.0 镜像)
+    # ------------------- 修复后的步骤：下载 Wi-Fi 驱动 -------------------
+    - name: 下载 Wi-Fi 驱动源码 (LineageOS 16.0 / Android 9)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        echo "正在下载 Wi-Fi 驱动，使用 Crdroid 镜像，分支: ${{ env.WIFI_DRIVER_BRANCH }}"
+        # 定义正确的分支：LineageOS 16.0 对应 Android 9
+        export WIFI_BRANCH="lineage-16.0"
+        
+        echo "正在下载 Wi-Fi 驱动，使用 LineageOS 官方仓库，分支: $WIFI_BRANCH"
         
         # 创建 MSM8953 常见的驱动路径
         mkdir -p drivers/vendor/qcom/opensource/wlan
         cd drivers/vendor/qcom/opensource/wlan
 
-        # 【修复】使用 Crdroid 仓库替代 LineageOS (解决 404 问题)
-        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-        git clone https://github.com/crdroidandroid/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b ${{ env.WIFI_DRIVER_BRANCH }} --depth=1
-    # ----------------------------------------------------------------------------------
+        # 使用 LineageOS 官方仓库，这些是永久存档，不会消失
+        # qcacld-3.0
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
+        
+        # fw-api
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
+        
+        # qca-wifi-host-cmn
+        git clone https://github.com/LineageOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
+    # ---------------------------------------------------------------------
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
