@@ -47,31 +47,31 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-    # ------------------- 终极修复：下载 Wi-Fi 驱动 (ArrowOS Android 9 存档) -------------------
-    - name: 下载 Wi-Fi 驱动源码 (ArrowOS 9.x)
+# ------------------- 救命稻草：下载 Wi-Fi 驱动 (DivestOS 16.0 存档) -------------------
+    - name: 下载 Wi-Fi 驱动源码 (DivestOS / LineageOS 16.0 镜像)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # ArrowOS 完整保留了 Android 9 的分支，命名为 'arrow-9.x'
-        export WIFI_BRANCH="arrow-9.x"
+        # DivestOS 是目前唯一完整保留 LineageOS 16.0 (Android 9) 源码的活跃团队
+        export WIFI_BRANCH="lineage-16.0"
         
-        echo "正在下载 Wi-Fi 驱动，使用 ArrowOS 仓库，分支: $WIFI_BRANCH"
+        echo "正在下载 Wi-Fi 驱动，使用 DivestOS 仓库 (永久存档)，分支: $WIFI_BRANCH"
         
-        # 创建 MSM8953 常见的驱动路径
+        # 创建驱动目录
         mkdir -p drivers/vendor/qcom/opensource/wlan
         cd drivers/vendor/qcom/opensource/wlan
 
-        # 使用 ArrowOS 仓库 (目前最可靠的 Android 9 驱动存档)
+        # 使用 DivestOS 仓库
         # qcacld-3.0
-        git clone https://github.com/ArrowOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
+        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_qcacld-3.0.git qcacld-3.0 -b $WIFI_BRANCH --depth=1
         
         # fw-api
-        git clone https://github.com/ArrowOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
+        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_fw-api.git fw-api -b $WIFI_BRANCH --depth=1
         
         # qca-wifi-host-cmn
-        git clone https://github.com/ArrowOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
+        git clone https://github.com/DivestOS/android_vendor_qcom_opensource_wlan_qca-wifi-host-cmn.git qca-wifi-host-cmn -b $WIFI_BRANCH --depth=1
     # -----------------------------------------------------------------------------------------
-
+      
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
