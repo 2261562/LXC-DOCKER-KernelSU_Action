@@ -148,6 +148,10 @@ jobs:
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
         
+        # 修复: 强制 host 工具使用系统链接器，避免 proton-clang ld 与新版 glibc 不兼容
+        export HOSTLD=/usr/bin/ld
+        export HOSTLDFLAGS=""
+        
         # 确认配置存在
         if [ ! -f out/.config ]; then
             echo "Critical Error: out/.config not found! Merge failed."
@@ -164,6 +168,7 @@ jobs:
             CROSS_COMPILE="aarch64-linux-android-" \
             CROSS_COMPILE_COMPAT="arm-linux-androideabi-" \
             CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
+            HOSTLD=/usr/bin/ld \
             LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             LOCALVERSION_AUTO=n
                 

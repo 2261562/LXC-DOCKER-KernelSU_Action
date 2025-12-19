@@ -12,12 +12,13 @@ jobs:
       KERNEL_SOURCE: https://git.codelinaro.org/clo/la/kernel/msm-5.4.git
       KERNEL_SOURCE_BRANCH: kernel.lnx.5.4.r1-rel
       # 原厂内核基于 5.4.191，编译时间 2022年10月
-      # 以下 tag 对应 Android 12 时期的 SM6375 稳定版本
-      # 可选 tag:
-      #   - LA.UM.9.16.r1-12600-MANNAR.QSSI12.0 (Android 12, 推荐)
-      #   - LA.UM.9.16.r1-13100-MANNAR.QSSI12.0 (Android 12 后期)
-      #   - LA.UM.9.16.r1-14300-MANNAR.QSSI13.0 (Android 13)
-      KERNEL_COMMIT: LA.UM.9.16.r1-12600-MANNAR.QSSI12.0
+      # SM6375 (骁龙695) 对应 HOLI 平台，使用 LA.UM.9.16 分支
+      # 可选 tag (HOLI 平台):
+      #   - LA.UM.9.16.r1-13700-HOLI.QSSI13.0 (Android 13)
+      #   - LA.UM.9.16.r1-14000-HOLI.QSSI14.0 (Android 14)
+      # 注意: MANNAR 是 SM6225 (Khaje) 平台，不适用于 SM6375
+      # 如果 tag 不存在，将使用分支最新 commit
+      KERNEL_COMMIT: LA.UM.9.16.r1-13700-HOLI.QSSI13.0
       KERNEL_ZIP_NAME: beryl_lxc-docker-kernel_clo-msm54_20251219
       LLVM_CONFIG: y
       KERNEL_IMAGE_NAME: Image
@@ -109,13 +110,32 @@ jobs:
         
         cd android-kernel
         
+        # 获取所有 tags
+        git fetch --tags
+        
         # 切换到指定的 commit/tag
         echo "切换到指定版本: ${{ env.KERNEL_COMMIT }}"
-        git checkout ${{ env.KERNEL_COMMIT }} || {
-          echo "指定的 commit/tag 不存在，尝试获取更多历史..."
-          git fetch --unshallow
-          git checkout ${{ env.KERNEL_COMMIT }}
-        }
+        if git checkout ${{ env.KERNEL_COMMIT }} 2>/dev/null; then
+          echo "成功切换到 ${{ env.KERNEL_COMMIT }}"
+        else
+          echo "指定的 tag 不存在，尝试获取完整历史..."
+          git fetch --unshallow 2>/dev/null || true
+          git fetch --all --tags
+          
+          if git checkout ${{ env.KERNEL_COMMIT }} 2>/dev/null; then
+            echo "成功切换到 ${{ env.KERNEL_COMMIT }}"
+          else
+            echo "=========================================="
+            echo "警告: 指定的 tag 不存在!"
+            echo "可用的 HOLI 相关 tags:"
+            git tag -l "*HOLI*" | head -20
+            echo ""
+            echo "可用的 LA.UM.9.16 相关 tags:"
+            git tag -l "LA.UM.9.16*" | head -20
+            echo "=========================================="
+            echo "将使用分支最新 commit 继续编译..."
+          fi
+        fi
         
         echo "当前 commit:"
         git log -1 --oneline
