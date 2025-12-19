@@ -105,37 +105,10 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # 克隆 CodeLinaro 仓库
-        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=100
+        # 浅克隆，使用分支最新 commit
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
         
         cd android-kernel
-        
-        # 获取所有 tags
-        git fetch --tags
-        
-        # 切换到指定的 commit/tag
-        echo "切换到指定版本: ${{ env.KERNEL_COMMIT }}"
-        if git checkout ${{ env.KERNEL_COMMIT }} 2>/dev/null; then
-          echo "成功切换到 ${{ env.KERNEL_COMMIT }}"
-        else
-          echo "指定的 tag 不存在，尝试获取完整历史..."
-          git fetch --unshallow 2>/dev/null || true
-          git fetch --all --tags
-          
-          if git checkout ${{ env.KERNEL_COMMIT }} 2>/dev/null; then
-            echo "成功切换到 ${{ env.KERNEL_COMMIT }}"
-          else
-            echo "=========================================="
-            echo "警告: 指定的 tag 不存在!"
-            echo "可用的 HOLI 相关 tags:"
-            git tag -l "*HOLI*" | head -20
-            echo ""
-            echo "可用的 LA.UM.9.16 相关 tags:"
-            git tag -l "LA.UM.9.16*" | head -20
-            echo "=========================================="
-            echo "将使用分支最新 commit 继续编译..."
-          fi
-        fi
         
         echo "当前 commit:"
         git log -1 --oneline
