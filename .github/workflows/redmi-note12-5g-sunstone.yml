@@ -129,6 +129,13 @@ jobs:
             mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
+        
+        # 修复 mm/page_alloc.c 返回值缺失错误
+        if [ -f mm/page_alloc.c ]; then
+            echo "=== 修复 mm/page_alloc.c 返回值问题 ==="
+            chmod +x $GITHUB_WORKSPACE/fix-page-alloc.sh
+            $GITHUB_WORKSPACE/fix-page-alloc.sh $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        fi
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
