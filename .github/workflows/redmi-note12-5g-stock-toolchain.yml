@@ -121,25 +121,36 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         mkdir -p out
 
-        # CodeLinaro 仓库使用标准的 vendor defconfig 结构
+        # CodeLinaro msm-5.4 使用 config fragments 结构
         # SM6375 (骁龙695) 对应 holi 平台
-        # 常见配置: vendor/holi-perf_defconfig 或 vendor/bengal-perf_defconfig
+        # 需要: gki_defconfig + vendor/holi_QGKI.config
         
-        if [ -f arch/arm64/configs/vendor/holi-perf_defconfig ]; then
-            DEFCONFIG="vendor/holi-perf_defconfig"
-        elif [ -f arch/arm64/configs/vendor/holi_defconfig ]; then
-            DEFCONFIG="vendor/holi_defconfig"
-        elif [ -f arch/arm64/configs/vendor/bengal-perf_defconfig ]; then
-            DEFCONFIG="vendor/bengal-perf_defconfig"
+        # 检查可用的配置方式
+        if [ -f arch/arm64/configs/gki_defconfig ] && [ -f arch/arm64/configs/vendor/holi_QGKI.config ]; then
+            echo "使用 GKI + Holi QGKI config fragments"
+            # 方式1: 使用 scripts/kconfig/merge_config.sh
+            ./scripts/kconfig/merge_config.sh -O out \
+                arch/arm64/configs/gki_defconfig \
+                arch/arm64/configs/vendor/holi_QGKI.config
+        elif [ -f arch/arm64/configs/vendor/genericarmv8-64_defconfig ]; then
+            echo "使用 genericarmv8-64_defconfig 作为基础"
+            # 方式2: 使用通用 defconfig + holi config
+            cp arch/arm64/configs/vendor/genericarmv8-64_defconfig arch/arm64/configs/holi_merged_defconfig
+            cat arch/arm64/configs/vendor/holi_QGKI.config >> arch/arm64/configs/holi_merged_defconfig
+            make O=out ARCH=arm64 holi_merged_defconfig
+        elif [ -f arch/arm64/configs/defconfig ]; then
+            echo "使用默认 defconfig + holi config"
+            ./scripts/kconfig/merge_config.sh -O out \
+                arch/arm64/configs/defconfig \
+                arch/arm64/configs/vendor/holi_QGKI.config
         else
             echo "可用的 defconfig 列表:"
-            ls -la arch/arm64/configs/vendor/ || ls -la arch/arm64/configs/
+            ls -la arch/arm64/configs/
+            echo "vendor configs:"
+            ls -la arch/arm64/configs/vendor/ 2>/dev/null || true
             echo "Error: 找不到合适的 defconfig"
             exit 1
         fi
-        
-        echo "使用配置: $DEFCONFIG"
-        make O=out ARCH=arm64 $DEFCONFIG
         
         echo "配置生成完成"
         ls -l out/.config
