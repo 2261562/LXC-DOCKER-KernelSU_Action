@@ -43,17 +43,46 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir -p android-clang
         
-        # 使用 ZyCromerZ 的 AOSP Clang 镜像 (稳定可靠)
-        # Clang 11.0.5 与原厂 11.0.2 高度兼容
-        echo "下载 AOSP Clang 11..."
-        wget -q https://github.com/ZyCromerZ/Clang/releases/download/11.0.5-20210422-release/Clang-11.0.5-20210422.tar.gz -O clang.tar.gz
+        # 尝试多个 Clang 11 下载源
+        CLANG_DOWNLOADED=false
         
-        if [ ! -f clang.tar.gz ]; then
-          echo "ZyCromerZ 源失败，尝试 kdrag0n proton-clang..."
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git android-clang
-        else
-          tar -xzf clang.tar.gz -C android-clang
-          rm clang.tar.gz
+        # 源1: ZyCromerZ Clang 11
+        echo "尝试下载 ZyCromerZ Clang 11..."
+        if wget -q --timeout=30 https://github.com/ZyCromerZ/Clang/releases/download/11.0.5-20210422-release/Clang-11.0.5-20210422.tar.gz -O clang.tar.gz 2>/dev/null && [ -s clang.tar.gz ]; then
+          tar -xzf clang.tar.gz -C android-clang && CLANG_DOWNLOADED=true
+          rm -f clang.tar.gz
+        fi
+        
+        # 源2: 使用 aosp-clang (Google 官方镜像)
+        if [ "$CLANG_DOWNLOADED" = false ]; then
+          echo "尝试下载 aosp-clang r383902b1..."
+          rm -f clang.tar.gz
+          if wget -q --timeout=60 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b1.tar.gz -O clang.tar.gz 2>/dev/null && [ -s clang.tar.gz ]; then
+            tar -xzf clang.tar.gz -C android-clang && CLANG_DOWNLOADED=true
+            rm -f clang.tar.gz
+          fi
+        fi
+        
+        # 源3: kdrag0n proton-clang (fallback)
+        if [ "$CLANG_DOWNLOADED" = false ]; then
+          echo "尝试克隆 proton-clang..."
+          rm -rf android-clang
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git android-clang && CLANG_DOWNLOADED=true
+        fi
+        
+        # 源4: neutron-clang (最后备选)
+        if [ "$CLANG_DOWNLOADED" = false ]; then
+          echo "尝试下载 neutron-clang..."
+          mkdir -p android-clang
+          cd android-clang
+          curl -LO "https://raw.githubusercontent.com/AntaresOne/neutron-clang/main/antman.sh"
+          bash antman.sh -S && CLANG_DOWNLOADED=true
+          cd ..
+        fi
+        
+        if [ "$CLANG_DOWNLOADED" = false ]; then
+          echo "Error: 所有 Clang 下载源均失败!"
+          exit 1
         fi
         
         # 验证 clang 版本
