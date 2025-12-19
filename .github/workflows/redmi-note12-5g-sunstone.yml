@@ -1,0 +1,250 @@
+name: Redmi Note 12 5G (Sunstone Kernel)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Kernel (Sunstone)
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      KERNEL_SOURCE: https://github.com/hcysahaaa1213/android_kernel_xiaomi_sunstone
+      KERNEL_SOURCE_BRANCH: lineage-22.1
+      KERNEL_ZIP_NAME: sunstone_lxc-docker-kernel_20251220
+      LLVM_CONFIG: y
+      KERNEL_IMAGE_NAME: Image
+      ENABLE_KERNELSU: false
+      KERNELSU_TAG: v0.9.5
+      ENABLE_LXC_DOCKER: true
+      # 伪装成原厂 vermagic，需要根据实际情况调整
+      # 可以先不设置，编译后查看生成的版本号
+      KERNEL_LOCALVERSION: ""
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+
+    - name: 构建编译环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+        mkdir -p $GITHUB_WORKSPACE/kernel_workspace
+                     
+    - name: 下载 Clang 编译器 (Clang 12 - 与原厂兼容)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        mkdir -p clang-aosp
+        
+        # 使用 proton-clang (稳定且兼容性好)
+        git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-aosp
+        
+        # 关键修复: 删除 proton-clang 自带的 ld，避免与新版 glibc 不兼容
+        # 错误: unknown type [0x13] section `.relr.dyn'
+        rm -f $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld
+        rm -f $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld.lld
+        # 创建符号链接指向系统 ld
+        ln -s /usr/bin/ld $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld
+        
+        echo "Clang 版本:"
+        $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
+    
+    - name: 下载 GCC 交叉编译器
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        # aarch64 GCC (64位)
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
+        # arm GCC (32位)
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
+              
+    - name: 下载内核源码
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+    
+    - name: ⚙️ 生成内核配置
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        mkdir -p out
+
+        # 检查可用的 defconfig
+        echo "=== 检查可用的配置文件 ==="
+        ls -la arch/arm64/configs/
+        if [ -d arch/arm64/configs/vendor ]; then
+            ls -la arch/arm64/configs/vendor/
+        fi
+        
+        # 根据实际情况选择配置文件
+        # 优先查找 sunstone 相关配置
+        if [ -f arch/arm64/configs/sunstone_defconfig ]; then
+            DEFCONFIG="sunstone_defconfig"
+        elif [ -f arch/arm64/configs/vendor/sunstone_defconfig ]; then
+            DEFCONFIG="vendor/sunstone_defconfig"
+        elif [ -f arch/arm64/configs/gki_defconfig ]; then
+            # 如果有 GKI 配置，使用 GKI + vendor 片段
+            BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
+            if [ -f arch/arm64/configs/vendor/sunstone_QGKI.config ]; then
+                VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_QGKI.config"
+            elif [ -f arch/arm64/configs/vendor/sunstone_GKI.config ]; then
+                VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
+            fi
+            
+            if [ -n "$VENDOR_FRAGMENT" ]; then
+                echo "=== 合并配置 (GKI 模式) ==="
+                echo "Base: $BASE_DEFCONFIG"
+                echo "Vendor: $VENDOR_FRAGMENT"
+                ./scripts/kconfig/merge_config.sh -m -O out $BASE_DEFCONFIG $VENDOR_FRAGMENT
+                make O=out ARCH=arm64 olddefconfig
+            else
+                echo "使用基础 GKI defconfig"
+                make O=out ARCH=arm64 gki_defconfig
+            fi
+        else
+            echo "Error: 找不到合适的 defconfig"
+            exit 1
+        fi
+        
+        # 如果找到了单一的 defconfig
+        if [ -n "$DEFCONFIG" ]; then
+            echo "=== 使用 defconfig: $DEFCONFIG ==="
+            make O=out ARCH=arm64 $DEFCONFIG
+        fi
+        
+        echo "配置生成完成"
+        ls -l out/.config
+
+    - name: 修复编译兼容性问题
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 修复 sm5602_fg.c 语法错误
+        if [ -f drivers/power/supply/sm5602_fg.c ]; then
+            sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
+        fi
+        
+        # 修复 Focaltech 触控驱动缺文件
+        if [ -d drivers/input/touchscreen/FT3519T ]; then
+            touch drivers/input/touchscreen/FT3519T/fw_sample.i
+            echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
+            sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
+            mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
+            echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
+        fi
+
+    - name: 开启 LXC 和 Docker 配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        # 此时 out/.config 已经由上面的合并步骤生成了，直接修改它
+        chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
+
+    - name: 配置 KernelSU (v0.9.5)
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+    
+    - name: 删除 .git 目录 (固定版本号)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        # 删除 .git 目录，彻底禁止 setlocalversion 脚本追加 git hash
+        rm -rf .git
+        # 同时删除 KernelSU 的 .git (如果有)
+        rm -rf KernelSU/.git 2>/dev/null || true
+
+    - name: 设置 ccache 缓存
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: build-kernel-sunstone
+        max-size: 2G
+
+    - name: 开始编译内核 (原厂工具链风格)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        
+        # 设置工具链路径
+        CLANG_PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin
+        GCC64_PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin
+        GCC32_PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin
+        
+        export PATH=$CLANG_PATH:$GCC64_PATH:$GCC32_PATH:$PATH
+        export KBUILD_BUILD_HOST=Github-Action
+        export KBUILD_BUILD_USER=Builder
+        
+        # 修复: 强制 host 工具使用系统链接器，避免 proton-clang ld 与新版 glibc 不兼容
+        export HOSTLD=/usr/bin/ld
+        export HOSTLDFLAGS=""
+        
+        # 确认配置存在
+        if [ ! -f out/.config ]; then
+            echo "Critical Error: out/.config not found! Config generation failed."
+            exit 1
+        fi
+        
+        # 使用原厂风格的编译参数 (Clang + GCC binutils 混合模式)
+        LOCALVERSION_ARG=""
+        if [ -n "${{ env.KERNEL_LOCALVERSION }}" ]; then
+            LOCALVERSION_ARG="LOCALVERSION=${{ env.KERNEL_LOCALVERSION }}"
+        fi
+        
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            CROSS_COMPILE="aarch64-linux-android-" \
+            CROSS_COMPILE_COMPAT="arm-linux-androideabi-" \
+            CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
+            HOSTLD=/usr/bin/ld \
+            $LOCALVERSION_ARG \
+            LOCALVERSION_AUTO=n
+                
+    - name: 准备打包内核 (AnyKernel3)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        git clone https://github.com/osm0sis/AnyKernel3
+        
+        # --- 关键修复 A: 彻底配置 AnyKernel3 参数 ---
+        # 默认的 anykernel.sh 只是个模板，必须把这些参数写死，否则无法识别
+        # 移除原文件的头部配置，写入针对 Note 12 5G (GKI) 的配置
+        
+        # 1. 清理杂文件
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        
+        # 2. 复制内核镜像
+        if [ -f android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
+            cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+        elif [ -f android-kernel/out/arch/arm64/boot/Image ]; then
+            cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
+        else
+            echo "Error: Kernel image not found!"
+            exit 1
+        fi
+        
+        # 3. 如果有 dtbo 也复制进去
+        if [ -f android-kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp android-kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+        fi
+
+        # 4. 修改 anykernel.sh (使用 sed 强行替换配置部分)
+        cd AnyKernel3
+        # 强制设置 block 分区路径 (针对高通平台)
+        sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
+        # 强制关闭机型检查
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        # 开启自动槽位检测
+        sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
+        # 关键：设置为 GKI 模式 (Image 格式)
+        sed -i 's/kernel.string=zImage/kernel.string=Image/g' anykernel.sh
+        
+        # --- 关键修复 B: 手动打包 ZIP ---
+        # -r9 表示最高压缩率，-x 排除垃圾文件
+        # 这样生成的 zip 包，解压后直接就是 META-INF 和 Image，而不是套着一层文件夹
+        zip -r9 $GITHUB_WORKSPACE/kernel_workspace/Final-Kernel.zip * -x .git README.md
+
+    - name: 上传内核
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        # 这里的 path 必须指向刚才手动生成的 .zip 文件
+        path: kernel_workspace/Final-Kernel.zip
