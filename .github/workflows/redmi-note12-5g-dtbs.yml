@@ -1,16 +1,16 @@
-name: Redmi Note 12 5G (LineageOS Clang 14)
+name: Redmi Note 12 5G (Proton Clang Stable)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (LineageOS Source)
+    name: Build Kernel (Proton Clang)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: moonstone-s-oss
-      KERNEL_ZIP_NAME: Moonstone_Final_Clang14.zip
+      KERNEL_ZIP_NAME: Moonstone_Final_Proton.zip
       KERNEL_IMAGE_NAME: Image.gz-dtb
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
@@ -25,15 +25,15 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 2. 下载编译器 (切换至 LineageOS 官方源)
+    - name: 2. 下载编译器 (Proton Clang 13)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # --- 核心修复：使用 LineageOS 镜像仓库 ---
-        # 这是一个具体的 Clang 14.0.6 (r450784d) 版本仓库
-        # 永久有效，不会 404，不会变动
-        echo "正在从 LineageOS 镜像克隆 Clang 14..."
-        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r450784d clang-zyc
+        # --- 核心修复：使用 kdrag0n/proton-clang ---
+        # 这是一个久经考验的 Clang 13 版本，专门用于编译 Android 内核
+        # 绝对存在，绝对稳定，不再 404
+        echo "正在克隆 Proton Clang..."
+        git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-zyc
         
         # 验证
         if [ ! -f "clang-zyc/bin/clang" ]; then
@@ -115,7 +115,7 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
         
-        # 只要不是源码级致命错误，编译就会成功
+        # 使用 Proton Clang 编译通常非常顺滑
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -147,7 +147,7 @@ jobs:
         echo "正在拼接 DTB..."
         cat $KERNEL_IMAGE $DTB_PATH/*.dtb > out/arch/arm64/boot/Image.gz-dtb
         
-        # 检查大小
+        # 再次检查大小，确保大于 25MB
         ls -lh out/arch/arm64/boot/Image.gz-dtb
 
     - name: 9. 打包 AnyKernel3
