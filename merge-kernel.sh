@@ -19,11 +19,13 @@ if [ "$#" -lt 1 ]; then
     echo "用法:"
     echo "  $0 verify <原厂kernel> <原厂kernel-dtb>  # 验证原厂文件"
     echo "  $0 merge <自编译Image> <原厂kernel-dtb>  # 拼接内核"
+    echo "  $0 split <原厂kernel>                    # 从原厂kernel分离出Image和DTB"
     echo "  $0 check-version <自编译Image> <原厂kernel>  # 检查版本是否匹配"
     echo ""
     echo "示例:"
     echo "  $0 verify kernel kernel-dtb"
     echo "  $0 merge Image kernel-dtb"
+    echo "  $0 split kernel"
     echo "  $0 check-version Image kernel"
     exit 1
 fi
@@ -272,6 +274,81 @@ merge_kernel() {
     echo -e "${GREEN}完成！用 $OUTPUT_FILE 替换原厂 boot.img 中的 kernel 文件${NC}"
 }
 
+# 分离功能：从原厂 kernel 中分离出 Image 和 DTB
+split_kernel() {
+    local KERNEL_FILE=$1
+    local OUTPUT_IMAGE=${2:-"stock_image"}
+    local OUTPUT_DTB=${3:-"stock_kernel-dtb"}
+    
+    if [ ! -f "$KERNEL_FILE" ]; then
+        echo -e "${RED}错误: 找不到 $KERNEL_FILE${NC}"
+        exit 1
+    fi
+    
+    KERNEL_SIZE=$(stat -f%z "$KERNEL_FILE" 2>/dev/null || stat -c%s "$KERNEL_FILE")
+    echo "=== 原厂 kernel 信息 ==="
+    echo "文件: $KERNEL_FILE"
+    echo "大小: $((KERNEL_SIZE / 1024 / 1024))MB ($KERNEL_SIZE bytes)"
+    echo ""
+    
+    # 搜索 DTB magic (d00dfeed)
+    echo "=== 搜索 DTB 偏移位置 ==="
+    DTB_OFFSET=$(grep -boa $'\xd0\x0d\xfe\xed' "$KERNEL_FILE" 2>/dev/null | head -1 | cut -d: -f1 || echo "")
+    
+    if [ -z "$DTB_OFFSET" ]; then
+        echo -e "${RED}错误: 未找到 DTB magic (d00dfeed)${NC}"
+        echo "这个 kernel 文件可能不是 Image+DTB 拼接格式"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}✓ 找到 DTB 偏移: $DTB_OFFSET${NC}"
+    echo ""
+    
+    # 计算大小
+    IMAGE_SIZE=$DTB_OFFSET
+    DTB_SIZE=$((KERNEL_SIZE - DTB_OFFSET))
+    
+    echo "=== 分离结构 ==="
+    echo "Image 部分: $((IMAGE_SIZE / 1024 / 1024))MB ($IMAGE_SIZE bytes)"
+    echo "DTB 部分:   $((DTB_SIZE / 1024 / 1024))MB ($DTB_SIZE bytes)"
+    echo ""
+    
+    # 分离 Image
+    echo "=== 分离中 ==="
+    dd if="$KERNEL_FILE" of="$OUTPUT_IMAGE" bs=1 count=$DTB_OFFSET 2>/dev/null
+    echo "✓ 已提取 Image -> $OUTPUT_IMAGE"
+    
+    # 分离 DTB
+    dd if="$KERNEL_FILE" of="$OUTPUT_DTB" bs=1 skip=$DTB_OFFSET 2>/dev/null
+    echo "✓ 已提取 DTB -> $OUTPUT_DTB"
+    echo ""
+    
+    # 验证
+    echo "=== 验证分离结果 ==="
+    
+    # 验证 Image
+    IMAGE_MAGIC=$(hexdump -n 4 -e '4/1 "%02x"' "$OUTPUT_IMAGE")
+    if [ "$IMAGE_MAGIC" = "4d5a0091" ] || [ "$IMAGE_MAGIC" = "4d5a4000" ]; then
+        echo -e "${GREEN}✓ $OUTPUT_IMAGE 是有效的 ARM64 Image${NC}"
+    else
+        echo -e "${YELLOW}⚠ $OUTPUT_IMAGE 文件头: $IMAGE_MAGIC${NC}"
+    fi
+    
+    # 验证 DTB
+    DTB_MAGIC=$(hexdump -n 4 -e '4/1 "%02x"' "$OUTPUT_DTB")
+    if [ "$DTB_MAGIC" = "d00dfeed" ]; then
+        echo -e "${GREEN}✓ $OUTPUT_DTB 是有效的 DTB 文件${NC}"
+    else
+        echo -e "${RED}✗ $OUTPUT_DTB 文件头异常: $DTB_MAGIC${NC}"
+    fi
+    
+    echo ""
+    echo -e "${GREEN}分离完成！${NC}"
+    echo ""
+    echo "下一步: 用自编译 Image 和分离出的 DTB 拼接"
+    echo "  $0 merge <自编译Image> $OUTPUT_DTB"
+}
+
 # 执行
 case $ACTION in
     verify)
@@ -288,6 +365,13 @@ case $ACTION in
         fi
         merge_kernel "$2" "$3" "$4"
         ;;
+    split)
+        if [ "$#" -lt 2 ]; then
+            echo "用法: $0 split <原厂kernel> [输出Image名] [输出DTB名]"
+            exit 1
+        fi
+        split_kernel "$2" "$3" "$4"
+        ;;
     check-version)
         if [ "$#" -lt 3 ]; then
             echo "用法: $0 check-version <自编译Image> <原厂kernel>"
@@ -297,7 +381,7 @@ case $ACTION in
         ;;
     *)
         echo "未知操作: $ACTION"
-        echo "可用操作: verify, merge, check-version"
+        echo "可用操作: verify, merge, split, check-version"
         exit 1
         ;;
 esac
