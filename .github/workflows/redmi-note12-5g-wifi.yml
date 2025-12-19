@@ -30,14 +30,14 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 下载 Clang 编译器 (Clang 11 - 与原厂一致)
+    - name: 下载 Clang 编译器 (Clang 12 - 与原厂兼容)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang-aosp
-        # 使用 Clang 11.0.5，与原厂 11.0.2 高度兼容
-        wget https://github.com/ZyCromerZ/Clang/releases/download/11.0.5-20210422-release/Clang-11.0.5-20210422.tar.gz
-        tar -xzf Clang-11.0.5-20210422.tar.gz -C clang-aosp
-        rm Clang-11.0.5-20210422.tar.gz
+        mkdir -p clang-aosp
+        
+        # 使用 proton-clang (稳定且兼容性好)
+        git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-aosp
+        
         echo "Clang 版本:"
         $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
     
