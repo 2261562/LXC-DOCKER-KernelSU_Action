@@ -10,13 +10,15 @@ jobs:
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: moonstone-s-oss
-      KERNEL_ZIP_NAME: beryl_lxc-docker-kernel_20251217
+      KERNEL_COMMIT: 584efd44a591
+      KERNEL_ZIP_NAME: beryl_lxc-docker-kernel_20251219
       LLVM_CONFIG: y
       KERNEL_IMAGE_NAME: Image
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
       ENABLE_LXC_DOCKER: true
-      KERNEL_LOCALVERSION: -mikasa
+      # 与原厂 vermagic 完全一致: 5.4.191-perf-g584efd44a591
+      KERNEL_LOCALVERSION: -perf
     
     steps:
     - uses: actions/checkout@v3
@@ -38,7 +40,13 @@ jobs:
     - name: 下载内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+        # 不使用 --depth=1，需要完整历史以便 checkout 到指定 commit
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel
+        cd android-kernel
+        # 切换到与原厂内核完全一致的 commit
+        git checkout ${{ env.KERNEL_COMMIT }}
+        echo "当前 commit: $(git rev-parse HEAD)"
+        echo "短 hash: $(git rev-parse --short=12 HEAD)"
     
     # --- 核心修复：正确的 GKI 配置合并逻辑 ---
     - name: ⚙️ 合并配置 (Merge GKI Config)
@@ -145,7 +153,9 @@ jobs:
             exit 1
         fi
         
-        # 直接开始编译，不再重复生成配置，以免覆盖合并结果
+        # 禁用自动版本后缀，确保 vermagic 与原厂完全一致
+        # 原厂版本: 5.4.191-perf-g584efd44a591
+        # LOCALVERSION=-perf + git commit hash = -perf-g584efd44a591
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
