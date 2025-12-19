@@ -1,4 +1,4 @@
-name: Redmi Note 12 5G
+name: Redmi Note 12 5G DTBS
 on:
   workflow_dispatch:
 
@@ -46,33 +46,35 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         mkdir -p out
 
-        # 1. 确定 Base Config (通常是 gki_defconfig)
-        BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
-        
-        # 2. 确定 Vendor Fragment (厂商片段)
-        # 优先找 moonstone，找不到找 sunstone (红米 Note 12 系列通用)
-        if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
-            VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
+        # 1. 自动选择最佳配置
+        # 优先寻找厂商全量 Defconfig (通常体积更大，包含所有驱动)
+        if [ -f arch/arm64/configs/vendor/moonstone_defconfig ]; then
+            SELECTED_CONFIG="vendor/moonstone_defconfig"
+            echo "发现全量配置: $SELECTED_CONFIG"
+        elif [ -f arch/arm64/configs/vendor/sunstone_defconfig ]; then
+            SELECTED_CONFIG="vendor/sunstone_defconfig"
+            echo "发现全量配置: $SELECTED_CONFIG"
+        # 如果没有全量配置，则回退到 GKI 合并模式
+        elif [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
+            ./scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/moonstone_GKI.config
+            echo "使用 GKI 合并模式: moonstone"
         elif [ -f arch/arm64/configs/vendor/sunstone_GKI.config ]; then
-            VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
+            ./scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/sunstone_GKI.config
+            echo "使用 GKI 合并模式: sunstone"
         else
-            echo "Error: 找不到厂商配置文件 (moonstone_GKI.config 或 sunstone_GKI.config)"
+            echo "Error: 找不到任何匹配的配置文件"
             exit 1
         fi
         
-        echo "正在合并: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
+        # 如果是直接使用的全量配置，需要先执行一次 make
+        if [ ! -f out/.config ]; then
+            make O=out ARCH=arm64 $SELECTED_CONFIG
+        fi
         
-        # 3. 使用内核自带脚本合并
-        # -m: merge only
-        # -O out: 输出到 out 目录 (关键！)
-        # 这样会生成 out/.config
-        ./scripts/kconfig/merge_config.sh -m -O out $BASE_DEFCONFIG $VENDOR_FRAGMENT
-        
-        # 4. 修复配置 (olddefconfig)
-        # 这一步会根据合并后的 .config 自动处理未定义的选项，防止编译询问
+        # 2. 修复配置 (olddefconfig)
         make O=out ARCH=arm64 olddefconfig
         
-        echo "配置合并完成，检查 out/.config 是否存在："
+        echo "配置生成完成，检查结果："
         ls -l out/.config
 
     - name: 修复 Clang 18 编译报错
@@ -145,7 +147,8 @@ jobs:
             exit 1
         fi
         
-        # 直接开始编译，不再重复生成配置，以免覆盖合并结果
+        # 编译目标：Image, Image.gz, dtbs, 以及关键的 Image-dtb (追加 DTB 的镜像)
+        # Image-dtb 通常体积更大，更接近原厂 40M 的特征
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -157,7 +160,9 @@ jobs:
             LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             LLVM=1 \
             LLVM_IAS=1 \
-            dtbs Image.gz Image
+            dtbs Image.gz Image Image-dtb Image.gz-dtb || true
+            
+        # 注意：Image-dtb 如果不支持会报错，用 || true 忽略，稍候在打包步骤判断是否存在
                 
     - name: 准备打包内核 (AnyKernel3)
       run: |       
@@ -169,15 +174,18 @@ jobs:
         # 1. 清理杂文件
         rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
         
-        # 2. 复制内核镜像
-        if [ -f android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
-            echo "Found specified image: ${{ env.KERNEL_IMAGE_NAME }}"
-            cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+        # 2. 复制内核镜像 (优先使用带 DTB 的版本以匹配原厂体积)
+        if [ -f android-kernel/out/arch/arm64/boot/Image-dtb ]; then
+            echo "使用 Image-dtb (包含追加设备树)"
+            cp android-kernel/out/arch/arm64/boot/Image-dtb AnyKernel3/Image
+        elif [ -f android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
+            echo "使用指定的镜像: ${{ env.KERNEL_IMAGE_NAME }}"
+            cp android-kernel/out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/Image
         elif [ -f android-kernel/out/arch/arm64/boot/Image ]; then
-            echo "Found standard Image"
+            echo "使用标准 Image"
             cp android-kernel/out/arch/arm64/boot/Image AnyKernel3/
         else
-            echo "Error: Kernel image not found!"
+            echo "Error: 找不到任何内核镜像文件！"
             exit 1
         fi
         
