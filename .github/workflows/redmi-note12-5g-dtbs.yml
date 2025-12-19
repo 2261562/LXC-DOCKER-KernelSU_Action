@@ -1,18 +1,16 @@
-name: Redmi Note 12 5G DTBS
+name: Redmi Note 12 5G Kernel
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (GKI Merge)
+    name: Build Kernel
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: moonstone-s-oss
-      KERNEL_ZIP_NAME: beryl_lxc-docker-kernel_20251217
-      LLVM_CONFIG: y
-      KERNEL_IMAGE_NAME: Image
+      KERNEL_ZIP_NAME: moonstone_kernel_ksu_lxc
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
       ENABLE_LXC_DOCKER: true
@@ -27,7 +25,7 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 下载 zyc-clang 编译器 (Clang 18)
+    - name: 下载 Clang 编译器
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir clang-zyc
@@ -39,377 +37,127 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
 
-    # --- 核心修复：正确的 GKI 配置合并逻辑 ---
-    - name: ⚙️ 合并配置 (Merge GKI Config)
+    - name: 配置内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         mkdir -p out
         
-        # 初始化变量
         SELECTED_CONFIG=""
         USE_GKI_MERGE=false
 
-        # 1. 列出可用配置文件 (调试用)
-        echo "=== 可用的配置文件 ==="
-        ls -la arch/arm64/configs/ || true
-        ls -la arch/arm64/configs/vendor/ || true
-        
-        # 2. 自动选择最佳配置
         if [ -f arch/arm64/configs/vendor/moonstone_defconfig ]; then
             SELECTED_CONFIG="vendor/moonstone_defconfig"
-            echo "✓ 发现全量配置: $SELECTED_CONFIG"
-        elif [ -f arch/arm64/configs/vendor/sunstone_defconfig ]; then
-            SELECTED_CONFIG="vendor/sunstone_defconfig"
-            echo "✓ 发现全量配置: $SELECTED_CONFIG"
         elif [ -f arch/arm64/configs/moonstone_defconfig ]; then
             SELECTED_CONFIG="moonstone_defconfig"
-            echo "✓ 发现配置: $SELECTED_CONFIG"
         elif [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
             USE_GKI_MERGE=true
-            echo "✓ 使用 GKI 合并模式: moonstone"
-        elif [ -f arch/arm64/configs/vendor/sunstone_GKI.config ]; then
-            USE_GKI_MERGE=true
-            echo "✓ 使用 GKI 合并模式: sunstone"
         else
-            echo "Error: 找不到任何匹配的配置文件"
+            echo "Error: 找不到配置文件"
             exit 1
         fi
         
-        # 3. 根据选择的模式生成配置
         if [ "$USE_GKI_MERGE" = true ]; then
-            # GKI 合并模式
-            if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
-                ./scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/moonstone_GKI.config
-            else
-                ./scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/sunstone_GKI.config
-            fi
+            ./scripts/kconfig/merge_config.sh -m -O out arch/arm64/configs/gki_defconfig arch/arm64/configs/vendor/moonstone_GKI.config
         else
-            # 直接使用 defconfig
             make O=out ARCH=arm64 $SELECTED_CONFIG
         fi
         
-        # 4. 修复配置 (olddefconfig)
         make O=out ARCH=arm64 olddefconfig
-        
-        # 5. 确保关键 DTB 配置开启
-        echo "=== 检查并启用 DTB 相关配置 ==="
-        # 确保 DTB 追加到 Image 的配置开启
-        scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE || true
-        scripts/config --file out/.config --enable CONFIG_BUILD_ARM64_DT_OVERLAY || true
-        
-        # 重新生成配置
-        make O=out ARCH=arm64 olddefconfig
-        
-        echo "=== 配置生成完成 ==="
-        ls -l out/.config
 
-    - name: 修复 Clang 18 编译报错
+    - name: 修复编译报错
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # --- 1. 修复 icnss2 驱动报错 ---
         if [ -f drivers/soc/qcom/icnss2/main.c ]; then
             sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
         fi
         
-        # --- 2. 修复 sm5602_fg.c 语法错误 ---
         if [ -f drivers/power/supply/sm5602_fg.c ]; then
             sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
         fi
         
-        # --- 3. 修复 Focaltech 触控驱动缺文件 ---
         if [ -d drivers/input/touchscreen/FT3519T ]; then
             touch drivers/input/touchscreen/FT3519T/fw_sample.i
             echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
             sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
-            
             mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
         
-        # --- 4. 全局禁用严格检查 ---
         echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
         echo "KBUILD_CFLAGS += -Wno-error=unused-variable" >> Makefile
-        
-        # --- 5. 放宽栈大小检查 ---
-        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
 
-    - name: 开启 LXC 和 Docker 配置
+    - name: 开启 LXC/Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         chmod 755 $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
         $GITHUB_WORKSPACE/add-lxc-docker-custom.sh android-kernel/out/.config
-        # 重新生成配置以应用 LXC/Docker 选项
         cd android-kernel
         make O=out ARCH=arm64 olddefconfig
 
-    - name: 配置 KernelSU (v0.9.5)
+    - name: 配置 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-        # KernelSU 可能修改 Kconfig，重新生成配置
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
         make O=out ARCH=arm64 olddefconfig
 
-    - name: 设置 ccache 缓存
+    - name: 设置 ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: build-kernel-moonstone-merged
+        key: build-kernel-moonstone
         max-size: 2G
 
-    - name: 开始编译内核
+    - name: 编译内核
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
         
-        # 确认配置存在
-        if [ ! -f out/.config ]; then
-            echo "Critical Error: out/.config not found!"
-            exit 1
-        fi
+        make -j$(nproc --all) \
+            O=out \
+            ARCH=arm64 \
+            CC=clang \
+            CXX=clang++ \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LOCALVERSION=${{ env.KERNEL_LOCALVERSION }} \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            Image
         
-        # 编译参数
-        MAKE_ARGS="O=out ARCH=arm64 CC=clang CXX=clang++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LOCALVERSION=${{ env.KERNEL_LOCALVERSION }} LLVM=1 LLVM_IAS=1"
-        
-        # 检查 DTS 源文件
-        echo "=== 检查 DTS 源文件 ==="
-        find arch/arm64/boot/dts -name "*.dts" -type f 2>/dev/null | head -10
-        ls -la arch/arm64/boot/dts/vendor/ 2>/dev/null || echo "vendor dts 目录不存在"
-        ls -la arch/arm64/boot/dts/qcom/ 2>/dev/null || echo "qcom dts 目录不存在"
-        
-        # 第一步：编译 Image
-        echo ""
-        echo "=== 编译 Image ==="
-        make -j$(nproc --all) $MAKE_ARGS Image
-        
-        # 检查编译结果
         if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "Error: Image 编译失败！"
             exit 1
         fi
         
-        echo "✓ Image 编译成功"
+        echo "✓ 编译成功"
         ls -lh out/arch/arm64/boot/Image
-        
-        # 第二步：单独编译 DTBs
-        echo ""
-        echo "=== 编译 DTBs ==="
-        make -j$(nproc --all) $MAKE_ARGS dtbs || {
-            echo "dtbs 目标失败，尝试其他方式..."
-            # 某些内核可能需要指定具体的 dtb 目标
-            make -j$(nproc --all) $MAKE_ARGS qcom/holi.dtb 2>/dev/null || true
-            make -j$(nproc --all) $MAKE_ARGS vendor/qcom/holi.dtb 2>/dev/null || true
-        }
-        
-        # 第三步：尝试编译 Image.gz
-        echo ""
-        echo "=== 编译 Image.gz ==="
-        make -j$(nproc --all) $MAKE_ARGS Image.gz || true
-        
-        # 第四步：查找 DTB 文件
-        echo ""
-        echo "=== 查找 DTB 文件 ==="
-        echo "在 out 目录中搜索所有 .dtb 文件:"
-        find out -name "*.dtb" -type f 2>/dev/null
-        
-        # 统计 DTB 文件
-        DTB_COUNT=$(find out -name "*.dtb" -type f 2>/dev/null | wc -l)
-        echo ""
-        echo "找到 $DTB_COUNT 个 DTB 文件"
-        
-        # 如果没有 DTB，检查配置
-        if [ "$DTB_COUNT" -eq 0 ]; then
-            echo ""
-            echo "⚠️ 未找到 DTB 文件，检查相关配置:"
-            grep -E "CONFIG_BUILD_ARM64.*DTB|CONFIG_OF|CONFIG_DTB" out/.config || true
-        fi
 
-    - name: 🔧 手动拼接 Image-dtb (关键步骤)
+    - name: 打包内核
       run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        
-        BOOT_DIR="out/arch/arm64/boot"
-        IMAGE_FILE="$BOOT_DIR/Image"
-        
-        echo "=== 调试：列出所有 DTB 文件 ==="
-        find out -name "*.dtb" -type f 2>/dev/null | head -30
-        
-        echo ""
-        echo "=== 调试：列出 dts 目录结构 ==="
-        ls -laR out/arch/arm64/boot/dts/ 2>/dev/null | head -50 || echo "dts 目录不存在"
-        
-        # 查找设备对应的 DTB 文件
-        echo ""
-        echo "=== 查找设备 DTB ==="
-        
-        DEVICE_DTB=""
-        
-        # 方法1: 查找包含设备名的 DTB (扩展搜索范围)
-        for pattern in "moonstone" "sunstone" "holi" "sm6225" "qcom" "bengal"; do
-            FOUND_DTB=$(find out -name "*${pattern}*.dtb" -type f 2>/dev/null | head -1)
-            if [ -n "$FOUND_DTB" ]; then
-                DEVICE_DTB="$FOUND_DTB"
-                echo "✓ 找到设备 DTB: $DEVICE_DTB"
-                break
-            fi
-        done
-        
-        # 方法2: 合并所有找到的 DTB
-        if [ -z "$DEVICE_DTB" ]; then
-            echo "未找到特定设备 DTB，尝试合并所有 DTB..."
-            
-            # 查找所有 DTB 文件
-            ALL_DTBS=$(find out -name "*.dtb" -type f 2>/dev/null)
-            
-            if [ -n "$ALL_DTBS" ]; then
-                echo "找到以下 DTB 文件:"
-                echo "$ALL_DTBS"
-                
-                # 合并所有 DTB 到一个文件
-                cat $ALL_DTBS > $BOOT_DIR/combined-dtb.dtb
-                DEVICE_DTB="$BOOT_DIR/combined-dtb.dtb"
-                echo "✓ 合并了所有 DTB 文件"
-            fi
-        fi
-        
-        # 检查是否找到 DTB
-        if [ -z "$DEVICE_DTB" ] || [ ! -f "$DEVICE_DTB" ]; then
-            echo "⚠️ Warning: 未找到任何 DTB 文件！"
-            echo "将只使用纯 Image"
-            echo ""
-            echo "=== 检查 DTB 编译是否成功 ==="
-            # 检查是否有 dtb 相关的编译输出
-            find out -name "*.dtb*" -o -name "*.dts*" 2>/dev/null | head -20
-        else
-            echo "使用 DTB: $DEVICE_DTB"
-            ls -lh "$DEVICE_DTB"
-            
-            # 拼接 Image + DTB
-            echo ""
-            echo "=== 拼接 Image-dtb ==="
-            cat "$IMAGE_FILE" "$DEVICE_DTB" > "$BOOT_DIR/Image-dtb"
-            
-            echo "✓ Image-dtb 生成成功:"
-            ls -lh "$BOOT_DIR/Image-dtb"
-            
-            # 如果有 Image.gz，也生成 Image.gz-dtb
-            if [ -f "$BOOT_DIR/Image.gz" ]; then
-                cat "$BOOT_DIR/Image.gz" "$DEVICE_DTB" > "$BOOT_DIR/Image.gz-dtb"
-                echo "✓ Image.gz-dtb 生成成功:"
-                ls -lh "$BOOT_DIR/Image.gz-dtb"
-            fi
-        fi
-        
-        # 显示所有生成的内核镜像
-        echo ""
-        echo "=== 所有内核镜像 ==="
-        ls -lh $BOOT_DIR/Image* 2>/dev/null || true
-
-    - name: 📊 验证编译产物
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        BOOT_DIR="out/arch/arm64/boot"
-        
-        echo "=== 编译产物检查 ==="
-        
-        # 检查 Image 大小
-        if [ -f "$BOOT_DIR/Image" ]; then
-            IMAGE_SIZE=$(stat -c%s "$BOOT_DIR/Image")
-            IMAGE_SIZE_MB=$((IMAGE_SIZE / 1024 / 1024))
-            echo "Image 大小: ${IMAGE_SIZE_MB}MB ($IMAGE_SIZE bytes)"
-        fi
-        
-        # 检查 Image-dtb 大小
-        if [ -f "$BOOT_DIR/Image-dtb" ]; then
-            IMAGE_DTB_SIZE=$(stat -c%s "$BOOT_DIR/Image-dtb")
-            IMAGE_DTB_SIZE_MB=$((IMAGE_DTB_SIZE / 1024 / 1024))
-            echo "Image-dtb 大小: ${IMAGE_DTB_SIZE_MB}MB ($IMAGE_DTB_SIZE bytes)"
-            
-            # 警告：如果 Image-dtb 小于 30MB，可能有问题
-            if [ $IMAGE_DTB_SIZE_MB -lt 30 ]; then
-                echo "⚠️ Warning: Image-dtb 只有 ${IMAGE_DTB_SIZE_MB}MB，原厂通常是 40MB 左右"
-                echo "可能缺少某些驱动或 DTB 不完整"
-            else
-                echo "✓ Image-dtb 大小正常"
-            fi
-        else
-            echo "⚠️ Warning: Image-dtb 未生成！"
-        fi
-        
-        # 列出 DTB 文件
-        echo ""
-        echo "=== DTB 文件列表 ==="
-        find out/arch/arm64/boot/dts -name "*.dtb" -type f 2>/dev/null | while read dtb; do
-            size=$(stat -c%s "$dtb")
-            echo "  $(basename $dtb): $((size/1024))KB"
-        done | head -20
-
-    - name: 准备打包内核 (AnyKernel3)
-      run: |       
         cd $GITHUB_WORKSPACE/kernel_workspace
-        git clone https://github.com/osm0sis/AnyKernel3 --depth=1
+        mkdir -p output
         
-        BOOT_DIR="android-kernel/out/arch/arm64/boot"
+        # 复制 Image
+        cp android-kernel/out/arch/arm64/boot/Image output/
         
-        # 1. 清理杂文件
-        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        # 打包
+        cd output
+        zip -r9 ../kernel-image.zip Image
         
-        # 2. 复制内核镜像 (优先使用 Image-dtb)
-        echo "=== 选择内核镜像 ==="
-        if [ -f "$BOOT_DIR/Image-dtb" ]; then
-            echo "✓ 使用 Image-dtb (包含设备树)"
-            cp "$BOOT_DIR/Image-dtb" AnyKernel3/Image
-        elif [ -f "$BOOT_DIR/Image.gz-dtb" ]; then
-            echo "✓ 使用 Image.gz-dtb"
-            cp "$BOOT_DIR/Image.gz-dtb" AnyKernel3/Image.gz
-        elif [ -f "$BOOT_DIR/Image" ]; then
-            echo "⚠️ 使用纯 Image (无 DTB，可能无法启动)"
-            cp "$BOOT_DIR/Image" AnyKernel3/
-        else
-            echo "Error: 找不到任何内核镜像！"
-            exit 1
-        fi
-        
-        # 3. 复制 dtbo.img (如果存在)
-        if [ -f "$BOOT_DIR/dtbo.img" ]; then
-            cp "$BOOT_DIR/dtbo.img" AnyKernel3/
-            echo "✓ 复制 dtbo.img"
-        fi
-        
-        # 4. 创建 dtb 目录并复制所有 DTB 文件
-        mkdir -p AnyKernel3/dtb
-        find android-kernel/out/arch/arm64/boot/dts -name "*.dtb" -type f -exec cp {} AnyKernel3/dtb/ \; 2>/dev/null
-        DTB_COUNT=$(ls AnyKernel3/dtb/*.dtb 2>/dev/null | wc -l)
-        echo "✓ 复制了 $DTB_COUNT 个 DTB 文件到 dtb/ 目录"
-        
-        # 5. 修改 anykernel.sh
-        cd AnyKernel3
-        
-        # 基本配置
-        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=auto;!g' anykernel.sh
-        sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
-        
-        # 显示最终内容
-        echo ""
-        echo "=== AnyKernel3 目录内容 ==="
-        ls -lh
-        
-        # 6. 打包
-        zip -r9 $GITHUB_WORKSPACE/kernel_workspace/Final-Kernel.zip * -x .git README.md
-        
-        echo ""
-        echo "=== 最终刷机包 ==="
-        ls -lh $GITHUB_WORKSPACE/kernel_workspace/Final-Kernel.zip
-        
+        echo "=== 输出文件 ==="
+        ls -lh ../kernel-image.zip
+        ls -lh Image
+
     - name: 上传内核
       uses: actions/upload-artifact@v4
       with:
         name: ${{ env.KERNEL_ZIP_NAME }}
-        path: kernel_workspace/Final-Kernel.zip
+        path: kernel_workspace/output/Image
