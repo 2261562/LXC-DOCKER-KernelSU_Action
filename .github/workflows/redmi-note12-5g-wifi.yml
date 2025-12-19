@@ -38,6 +38,13 @@ jobs:
         # 使用 proton-clang (稳定且兼容性好)
         git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang-aosp
         
+        # 关键修复: 删除 proton-clang 自带的 ld，避免与新版 glibc 不兼容
+        # 错误: unknown type [0x13] section `.relr.dyn'
+        rm -f $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld
+        rm -f $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld.lld
+        # 创建符号链接指向系统 ld
+        ln -s /usr/bin/ld $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ld
+        
         echo "Clang 版本:"
         $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
     
