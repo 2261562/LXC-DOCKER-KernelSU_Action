@@ -1,16 +1,16 @@
-name: Redmi Note 12 5G (Proton Clang Stable)
+name: Redmi Note 12 5G (Fix Host Linker)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Proton Clang)
+    name: Build Kernel (HostGCC + Proton)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: moonstone-s-oss
-      KERNEL_ZIP_NAME: Moonstone_Final_Proton.zip
+      KERNEL_ZIP_NAME: Moonstone_Final_Fixed.zip
       KERNEL_IMAGE_NAME: Image.gz-dtb
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
@@ -29,18 +29,14 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # --- 核心修复：使用 kdrag0n/proton-clang ---
-        # 这是一个久经考验的 Clang 13 版本，专门用于编译 Android 内核
-        # 绝对存在，绝对稳定，不再 404
         echo "正在克隆 Proton Clang..."
+        # 依然使用 Proton Clang，因为它对内核代码的兼容性最好
         git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-zyc
         
-        # 验证
         if [ ! -f "clang-zyc/bin/clang" ]; then
             echo "Error: Clang 下载失败！"
             exit 1
         fi
-        clang-zyc/bin/clang --version
               
     - name: 3. 下载内核源码
       run: |
@@ -82,26 +78,23 @@ jobs:
             scripts/config --file $CONFIG_FILE --enable CONFIG_IKHEADERS
         fi
 
-        make O=out ARCH=arm64 olddefconfig
+        # 注意：这里也需要加上 HOSTCC=gcc，防止 olddefconfig 阶段就报错
+        make O=out ARCH=arm64 HOSTCC=gcc HOSTCXX=g++ olddefconfig
 
     - name: 5. 修复编译报错 (去除 Werror)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # 强制移除所有 -Werror，将错误降级为警告
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
         
-        # 针对 USB 驱动的额外处理
         if [ -f drivers/usb/typec/tcpc/Makefile ]; then
             echo "ccflags-y += -Wno-error" >> drivers/usb/typec/tcpc/Makefile
         fi
 
-        # 修复 icnss2 驱动
         if [ -f drivers/soc/qcom/icnss2/main.c ]; then
             sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
         fi
         
-        # 修复栈大小限制
         find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
 
     - name: 6. 安装 KernelSU
@@ -110,17 +103,22 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
 
-    - name: 7. 开始编译
+    - name: 7. 开始编译 (关键修正)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
         
-        # 使用 Proton Clang 编译通常非常顺滑
+        # --- 核心修正 ---
+        # 1. HOSTCC=gcc HOSTCXX=g++ : 强制使用系统 GCC 编译主机工具 (fixdep 等)，解决 .relr.dyn 链接错误
+        # 2. CLANG_TRIPLE 等参数保持不变，确保交叉编译手机内核时使用 Proton Clang
+        
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CC="clang" \
             CXX=clang++ \
+            HOSTCC=gcc \
+            HOSTCXX=g++ \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
             CROSS_COMPILE="aarch64-linux-gnu-" \
             CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
@@ -128,7 +126,7 @@ jobs:
             LLVM_IAS=1 \
             Image.gz dtbs
 
-    - name: 8. 拼接 DTB (关键步骤)
+    - name: 8. 拼接 DTB (救砖步骤)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -147,7 +145,6 @@ jobs:
         echo "正在拼接 DTB..."
         cat $KERNEL_IMAGE $DTB_PATH/*.dtb > out/arch/arm64/boot/Image.gz-dtb
         
-        # 再次检查大小，确保大于 25MB
         ls -lh out/arch/arm64/boot/Image.gz-dtb
 
     - name: 9. 打包 AnyKernel3
