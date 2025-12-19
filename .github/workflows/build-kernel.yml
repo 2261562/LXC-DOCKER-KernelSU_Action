@@ -1,0 +1,208 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: 'Kernel source repository'
+        required: true
+        default: 'https://github.com/hcysahaaa1213/android_kernel_xiaomi_sunstone'
+      KERNEL_BRANCH:
+        description: 'Kernel branch'
+        required: true
+        default: 'lineage-21'
+      DEFCONFIG:
+        description: 'Defconfig file name'
+        required: true
+        default: 'sunstone_defconfig'
+      ENABLE_LXC_DOCKER:
+        description: 'Enable LXC/Docker support'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      ENABLE_KERNELSU:
+        description: 'Enable KernelSU'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      KERNELSU_TAG:
+        description: 'KernelSU version tag'
+        required: false
+        default: 'v0.9.5'
+      KERNEL_LOCALVERSION:
+        description: 'Kernel local version string'
+        required: false
+        default: '-sunstone'
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Setup build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python-is-python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi libncurses-dev
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: build-kernel-sunstone
+          max-size: 2G
+
+      - name: Download Clang toolchain (Proton Clang)
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/toolchain
+          cd $GITHUB_WORKSPACE/toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          
+          # Fix: Remove proton-clang ld to avoid glibc incompatibility
+          rm -f clang/bin/ld clang/bin/ld.lld
+          ln -s /usr/bin/ld clang/bin/ld
+          
+          echo "Clang version:"
+          clang/bin/clang --version
+
+      - name: Download GCC toolchains
+        run: |
+          cd $GITHUB_WORKSPACE/toolchain
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_SOURCE }} kernel
+
+      - name: Setup KernelSU
+        if: github.event.inputs.ENABLE_KERNELSU == 'true'
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ github.event.inputs.KERNELSU_TAG }}
+
+      - name: Generate kernel config
+        run: |
+          cd kernel
+          mkdir -p out
+          
+          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
+          export ARCH=arm64
+          
+          make O=out CC=clang ${{ github.event.inputs.DEFCONFIG }}
+
+      - name: Enable LXC/Docker config
+        if: github.event.inputs.ENABLE_LXC_DOCKER == 'true'
+        run: |
+          chmod +x $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
+          $GITHUB_WORKSPACE/add-lxc-docker-custom.sh kernel/out/.config
+          
+          cd kernel
+          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
+          export ARCH=arm64
+          make O=out olddefconfig
+
+      - name: Remove .git directory (fix version string)
+        run: |
+          cd kernel
+          rm -rf .git
+          rm -rf KernelSU/.git 2>/dev/null || true
+
+      - name: Build kernel
+        run: |
+          cd kernel
+          
+          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_HOST=Github-Action
+          export KBUILD_BUILD_USER=Builder
+          export HOSTLD=/usr/bin/ld
+          
+          make -j$(nproc --all) O=out \
+            ARCH=arm64 \
+            CC="ccache clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CROSS_COMPILE_COMPAT=arm-linux-androideabi- \
+            HOSTLD=/usr/bin/ld \
+            LOCALVERSION="${{ github.event.inputs.KERNEL_LOCALVERSION }}" \
+            LOCALVERSION_AUTO=n
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          
+          # Clean up
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+          
+          # Copy kernel image
+          if [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            echo "Error: Kernel image not found!"
+            find kernel/out -name "Image*" -o -name "zImage*" 2>/dev/null
+            exit 1
+          fi
+          
+          # Copy dtbo if exists
+          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          fi
+          
+          # Configure AnyKernel3 for Qualcomm device
+          cd AnyKernel3
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
+          
+          # Create flashable zip
+          zip -r9 ../kernel-sunstone-lxc.zip * -x .git README.md
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-sunstone-${{ github.run_id }}
+          path: kernel-sunstone-lxc.zip
+          if-no-files-found: error
+
+      - name: Create release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: kernel-${{ github.run_id }}
+          name: Sunstone Kernel Build ${{ github.run_id }}
+          body: |
+            Kernel built from: ${{ github.event.inputs.KERNEL_SOURCE }}
+            Branch: ${{ github.event.inputs.KERNEL_BRANCH }}
+            Defconfig: ${{ github.event.inputs.DEFCONFIG }}
+            LXC/Docker: ${{ github.event.inputs.ENABLE_LXC_DOCKER }}
+            KernelSU: ${{ github.event.inputs.ENABLE_KERNELSU }}
+          files: kernel-sunstone-lxc.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
