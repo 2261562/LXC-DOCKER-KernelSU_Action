@@ -1,16 +1,16 @@
-name: Redmi Note 12 5G (Fix 404 & Clang 14)
+name: Redmi Note 12 5G (LineageOS Clang 14)
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build Kernel (Git Clone Clang 14)
+    name: Build Kernel (LineageOS Source)
     runs-on: ubuntu-latest
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/MiCode/Xiaomi_Kernel_OpenSource/
       KERNEL_SOURCE_BRANCH: moonstone-s-oss
-      KERNEL_ZIP_NAME: Moonstone_Fixed_Final.zip
+      KERNEL_ZIP_NAME: Moonstone_Final_Clang14.zip
       KERNEL_IMAGE_NAME: Image.gz-dtb
       ENABLE_KERNELSU: true
       KERNELSU_TAG: v0.9.5
@@ -25,17 +25,17 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 2. 下载编译器 (使用 Git Clone 避免 404)
+    - name: 2. 下载编译器 (切换至 LineageOS 官方源)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
-        # --- 核心修复：改用 git clone 拉取 Clang 14 ---
-        # ZyCromerZ 的 release 经常变动，直接 clone 分支最稳
-        # depth=1 保证只拉取最新一次提交，速度很快
-        echo "正在克隆 Clang 14..."
-        git clone --depth=1 -b 14 https://github.com/ZyCromerZ/Clang clang-zyc
+        # --- 核心修复：使用 LineageOS 镜像仓库 ---
+        # 这是一个具体的 Clang 14.0.6 (r450784d) 版本仓库
+        # 永久有效，不会 404，不会变动
+        echo "正在从 LineageOS 镜像克隆 Clang 14..."
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r450784d clang-zyc
         
-        # 验证一下编译器是否下载成功
+        # 验证
         if [ ! -f "clang-zyc/bin/clang" ]; then
             echo "Error: Clang 下载失败！"
             exit 1
@@ -84,20 +84,19 @@ jobs:
 
         make O=out ARCH=arm64 olddefconfig
 
-    - name: 5. 修复编译报错 (暴力忽略错误)
+    - name: 5. 修复编译报错 (去除 Werror)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # --- 暴力忽略所有 Error ---
-        # 强制将所有 Makefiles 中的 -Werror 替换为空，把错误变回警告
+        # 强制移除所有 -Werror，将错误降级为警告
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
         
-        # 针对 usb 驱动报错，额外加保险
+        # 针对 USB 驱动的额外处理
         if [ -f drivers/usb/typec/tcpc/Makefile ]; then
             echo "ccflags-y += -Wno-error" >> drivers/usb/typec/tcpc/Makefile
         fi
 
-        # 修复 icnss2 驱动常见报错
+        # 修复 icnss2 驱动
         if [ -f drivers/soc/qcom/icnss2/main.c ]; then
             sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
         fi
@@ -116,8 +115,7 @@ jobs:
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
         
-        # 移除 -k 参数，因为我们已经降级了 Clang 并移除了 -Werror
-        # 如果这里还报错，说明是源码的严重逻辑问题，而不是编译器检查问题
+        # 只要不是源码级致命错误，编译就会成功
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
@@ -130,7 +128,7 @@ jobs:
             LLVM_IAS=1 \
             Image.gz dtbs
 
-    - name: 8. 拼接 DTB (救砖核心步骤)
+    - name: 8. 拼接 DTB (关键步骤)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
@@ -141,17 +139,15 @@ jobs:
             exit 1
         fi
         
-        # 寻找并拼接 DTB
         DTB_PATH="out/arch/arm64/boot/dts/vendor/qcom"
         if [ ! -d "$DTB_PATH" ]; then
             DTB_PATH="out/arch/arm64/boot/dts/qcom"
         fi
         
-        echo "正在将内核与 DTB 拼接..."
-        # 拼接所有 dtb，确保包含 device tree
+        echo "正在拼接 DTB..."
         cat $KERNEL_IMAGE $DTB_PATH/*.dtb > out/arch/arm64/boot/Image.gz-dtb
         
-        # 检查大小，如果小于 20MB 说明肯定错了
+        # 检查大小
         ls -lh out/arch/arm64/boot/Image.gz-dtb
 
     - name: 9. 打包 AnyKernel3
