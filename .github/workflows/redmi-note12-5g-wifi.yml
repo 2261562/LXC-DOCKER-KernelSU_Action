@@ -41,6 +41,8 @@ jobs:
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
+        # 删除 .git 目录，彻底禁止 setlocalversion 脚本追加 git hash
+        rm -rf android-kernel/.git
     
     # --- 核心修复：正确的 GKI 配置合并逻辑 ---
     - name: ⚙️ 合并配置 (Merge GKI Config)
