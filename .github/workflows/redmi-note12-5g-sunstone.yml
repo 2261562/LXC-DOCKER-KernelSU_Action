@@ -9,7 +9,7 @@ jobs:
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       KERNEL_SOURCE: https://github.com/hcysahaaa1213/android_kernel_xiaomi_sunstone
-      KERNEL_SOURCE_BRANCH: lineage-22.1
+      KERNEL_SOURCE_BRANCH: android-14
       KERNEL_ZIP_NAME: sunstone_lxc-docker-kernel_20251220
       LLVM_CONFIG: y
       KERNEL_IMAGE_NAME: Image
