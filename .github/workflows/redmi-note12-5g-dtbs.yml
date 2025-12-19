@@ -177,9 +177,16 @@ jobs:
         # 编译参数
         MAKE_ARGS="O=out ARCH=arm64 CC=clang CXX=clang++ CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LOCALVERSION=${{ env.KERNEL_LOCALVERSION }} LLVM=1 LLVM_IAS=1"
         
-        # 第一步：编译 Image 和 dtbs
-        echo "=== 编译 Image 和 DTBs ==="
-        make -j$(nproc --all) $MAKE_ARGS Image dtbs
+        # 检查 DTS 源文件
+        echo "=== 检查 DTS 源文件 ==="
+        find arch/arm64/boot/dts -name "*.dts" -type f 2>/dev/null | head -10
+        ls -la arch/arm64/boot/dts/vendor/ 2>/dev/null || echo "vendor dts 目录不存在"
+        ls -la arch/arm64/boot/dts/qcom/ 2>/dev/null || echo "qcom dts 目录不存在"
+        
+        # 第一步：编译 Image
+        echo ""
+        echo "=== 编译 Image ==="
+        make -j$(nproc --all) $MAKE_ARGS Image
         
         # 检查编译结果
         if [ ! -f out/arch/arm64/boot/Image ]; then
@@ -187,20 +194,41 @@ jobs:
             exit 1
         fi
         
-        echo "=== Image 编译成功 ==="
+        echo "✓ Image 编译成功"
         ls -lh out/arch/arm64/boot/Image
         
-        # 第二步：尝试编译 Image.gz
+        # 第二步：单独编译 DTBs
+        echo ""
+        echo "=== 编译 DTBs ==="
+        make -j$(nproc --all) $MAKE_ARGS dtbs || {
+            echo "dtbs 目标失败，尝试其他方式..."
+            # 某些内核可能需要指定具体的 dtb 目标
+            make -j$(nproc --all) $MAKE_ARGS qcom/holi.dtb 2>/dev/null || true
+            make -j$(nproc --all) $MAKE_ARGS vendor/qcom/holi.dtb 2>/dev/null || true
+        }
+        
+        # 第三步：尝试编译 Image.gz
+        echo ""
         echo "=== 编译 Image.gz ==="
         make -j$(nproc --all) $MAKE_ARGS Image.gz || true
         
-        # 第三步：查找并合并 DTB 文件
+        # 第四步：查找 DTB 文件
+        echo ""
         echo "=== 查找 DTB 文件 ==="
-        find out/arch/arm64/boot/dts -name "*.dtb" -type f 2>/dev/null | head -20
+        echo "在 out 目录中搜索所有 .dtb 文件:"
+        find out -name "*.dtb" -type f 2>/dev/null
         
         # 统计 DTB 文件
-        DTB_COUNT=$(find out/arch/arm64/boot/dts -name "*.dtb" -type f 2>/dev/null | wc -l)
+        DTB_COUNT=$(find out -name "*.dtb" -type f 2>/dev/null | wc -l)
+        echo ""
         echo "找到 $DTB_COUNT 个 DTB 文件"
+        
+        # 如果没有 DTB，检查配置
+        if [ "$DTB_COUNT" -eq 0 ]; then
+            echo ""
+            echo "⚠️ 未找到 DTB 文件，检查相关配置:"
+            grep -E "CONFIG_BUILD_ARM64.*DTB|CONFIG_OF|CONFIG_DTB" out/.config || true
+        fi
 
     - name: 🔧 手动拼接 Image-dtb (关键步骤)
       run: |
@@ -209,66 +237,77 @@ jobs:
         BOOT_DIR="out/arch/arm64/boot"
         IMAGE_FILE="$BOOT_DIR/Image"
         
+        echo "=== 调试：列出所有 DTB 文件 ==="
+        find out -name "*.dtb" -type f 2>/dev/null | head -30
+        
+        echo ""
+        echo "=== 调试：列出 dts 目录结构 ==="
+        ls -laR out/arch/arm64/boot/dts/ 2>/dev/null | head -50 || echo "dts 目录不存在"
+        
         # 查找设备对应的 DTB 文件
-        # moonstone/sunstone 通常对应 SM6225 (Holi) 平台
+        echo ""
         echo "=== 查找设备 DTB ==="
         
-        # 优先查找 moonstone 或 sunstone 相关的 DTB
         DEVICE_DTB=""
         
-        # 方法1: 查找包含设备名的 DTB
-        for pattern in "moonstone" "sunstone" "holi" "sm6225"; do
-            FOUND_DTB=$(find out/arch/arm64/boot/dts -name "*${pattern}*.dtb" -type f 2>/dev/null | head -1)
+        # 方法1: 查找包含设备名的 DTB (扩展搜索范围)
+        for pattern in "moonstone" "sunstone" "holi" "sm6225" "qcom" "bengal"; do
+            FOUND_DTB=$(find out -name "*${pattern}*.dtb" -type f 2>/dev/null | head -1)
             if [ -n "$FOUND_DTB" ]; then
                 DEVICE_DTB="$FOUND_DTB"
-                echo "找到设备 DTB: $DEVICE_DTB"
+                echo "✓ 找到设备 DTB: $DEVICE_DTB"
                 break
             fi
         done
         
-        # 方法2: 如果没找到特定设备 DTB，合并所有 vendor DTB
+        # 方法2: 合并所有找到的 DTB
         if [ -z "$DEVICE_DTB" ]; then
-            echo "未找到特定设备 DTB，尝试合并所有 vendor DTB..."
+            echo "未找到特定设备 DTB，尝试合并所有 DTB..."
             
-            # 查找 vendor/qcom 目录下的 DTB
-            VENDOR_DTBS=$(find out/arch/arm64/boot/dts/vendor -name "*.dtb" -type f 2>/dev/null)
+            # 查找所有 DTB 文件
+            ALL_DTBS=$(find out -name "*.dtb" -type f 2>/dev/null)
             
-            if [ -n "$VENDOR_DTBS" ]; then
+            if [ -n "$ALL_DTBS" ]; then
+                echo "找到以下 DTB 文件:"
+                echo "$ALL_DTBS"
+                
                 # 合并所有 DTB 到一个文件
-                cat $VENDOR_DTBS > $BOOT_DIR/combined-dtb.dtb
+                cat $ALL_DTBS > $BOOT_DIR/combined-dtb.dtb
                 DEVICE_DTB="$BOOT_DIR/combined-dtb.dtb"
-                echo "合并了所有 vendor DTB"
+                echo "✓ 合并了所有 DTB 文件"
             fi
         fi
         
-        # 方法3: 使用任意找到的 DTB
-        if [ -z "$DEVICE_DTB" ]; then
-            DEVICE_DTB=$(find out/arch/arm64/boot/dts -name "*.dtb" -type f 2>/dev/null | head -1)
-        fi
-        
-        if [ -z "$DEVICE_DTB" ]; then
-            echo "Warning: 未找到任何 DTB 文件！"
-            echo "将只使用纯 Image，可能导致启动失败"
+        # 检查是否找到 DTB
+        if [ -z "$DEVICE_DTB" ] || [ ! -f "$DEVICE_DTB" ]; then
+            echo "⚠️ Warning: 未找到任何 DTB 文件！"
+            echo "将只使用纯 Image"
+            echo ""
+            echo "=== 检查 DTB 编译是否成功 ==="
+            # 检查是否有 dtb 相关的编译输出
+            find out -name "*.dtb*" -o -name "*.dts*" 2>/dev/null | head -20
         else
             echo "使用 DTB: $DEVICE_DTB"
             ls -lh "$DEVICE_DTB"
             
             # 拼接 Image + DTB
+            echo ""
             echo "=== 拼接 Image-dtb ==="
             cat "$IMAGE_FILE" "$DEVICE_DTB" > "$BOOT_DIR/Image-dtb"
             
-            echo "Image-dtb 生成成功:"
+            echo "✓ Image-dtb 生成成功:"
             ls -lh "$BOOT_DIR/Image-dtb"
             
             # 如果有 Image.gz，也生成 Image.gz-dtb
             if [ -f "$BOOT_DIR/Image.gz" ]; then
                 cat "$BOOT_DIR/Image.gz" "$DEVICE_DTB" > "$BOOT_DIR/Image.gz-dtb"
-                echo "Image.gz-dtb 生成成功:"
+                echo "✓ Image.gz-dtb 生成成功:"
                 ls -lh "$BOOT_DIR/Image.gz-dtb"
             fi
         fi
         
         # 显示所有生成的内核镜像
+        echo ""
         echo "=== 所有内核镜像 ==="
         ls -lh $BOOT_DIR/Image* 2>/dev/null || true
 
