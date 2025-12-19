@@ -34,15 +34,25 @@ ACTION=$1
 extract_kernel_version() {
     local KERNEL_FILE=$1
     local VERSION=""
+    local TEMP_FILE="/tmp/kernel_uncompressed_$(date +%s)"
     
+    # 检查是否是 gzip 压缩 (通常 Image.gz 以 1f 8b 开头)
+    if hexdump -n 2 -e '2/1 "%02x"' "$KERNEL_FILE" | grep -q "1f8b"; then
+        # 尝试解压到临时文件
+        zcat "$KERNEL_FILE" > "$TEMP_FILE" 2>/dev/null || gunzip -c "$KERNEL_FILE" > "$TEMP_FILE" 2>/dev/null || true
+    else
+        cp "$KERNEL_FILE" "$TEMP_FILE"
+    fi
+
     # 方法1: 使用 strings 搜索 Linux version
-    VERSION=$(strings "$KERNEL_FILE" 2>/dev/null | grep -oE "Linux version [0-9]+\.[0-9]+\.[0-9]+[^ ]*" | head -1)
+    VERSION=$(strings "$TEMP_FILE" 2>/dev/null | grep -oE "Linux version [0-9]+\.[0-9]+\.[0-9]+[^ ]*" | head -1)
     
     if [ -z "$VERSION" ]; then
         # 方法2: 搜索更宽松的版本模式
-        VERSION=$(strings "$KERNEL_FILE" 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9._-]+" | head -1)
+        VERSION=$(strings "$TEMP_FILE" 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9._-]+" | head -1)
     fi
     
+    rm -f "$TEMP_FILE"
     echo "$VERSION"
 }
 
