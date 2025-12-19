@@ -25,13 +25,12 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 2. 下载编译器 (Proton Clang 13)
+    - name: 2. 下载 zyc-clang 编译器 (Clang 18)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        
-        echo "正在克隆 Proton Clang..."
-        # 依然使用 Proton Clang，因为它对内核代码的兼容性最好
-        git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-zyc
+        mkdir clang-zyc
+        wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20230903-release/Clang-18.0.0-20230903.tar.gz
+        tar -C clang-zyc/ -zxf Clang-18.0.0-20230903.tar.gz
         
         if [ ! -f "clang-zyc/bin/clang" ]; then
             echo "Error: Clang 下载失败！"
@@ -81,21 +80,29 @@ jobs:
         # 注意：这里也需要加上 HOSTCC=gcc，防止 olddefconfig 阶段就报错
         make O=out ARCH=arm64 HOSTCC=gcc HOSTCXX=g++ olddefconfig
 
-    - name: 5. 修复编译报错 (去除 Werror)
+    - name: 5. 修复编译报错 (Clang 18 适配)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
+        # 移除 Werror 并设置栈大小
         find . -name "Makefile" -exec sed -i 's/-Werror//g' {} +
-        
-        if [ -f drivers/usb/typec/tcpc/Makefile ]; then
-            echo "ccflags-y += -Wno-error" >> drivers/usb/typec/tcpc/Makefile
-        fi
+        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
 
+        # 修复 icnss2 驱动报错
         if [ -f drivers/soc/qcom/icnss2/main.c ]; then
             sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
         fi
-        
-        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
+
+        # 修复 sm5602_fg.c 语法错误
+        if [ -f drivers/power/supply/sm5602_fg.c ]; then
+            sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
+        fi
+
+        # 全局禁用部分严格检查以适配 Clang 18
+        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-unused-but-set-variable" >> Makefile
+        echo "KBUILD_CFLAGS += -Wno-unused-variable" >> Makefile
 
     - name: 6. 安装 KernelSU
       if: env.ENABLE_KERNELSU == 'true'
