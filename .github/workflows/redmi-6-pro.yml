@@ -1,4 +1,4 @@
-name: Redmi 6 Pro (Sakura) - 小米官方（无Wifi模块）
+name: Redmi 6 Pro (Sakura) - 小米官方 (匹配原厂 WiFi 驱动)
 on:
   workflow_dispatch:
 
@@ -18,7 +18,7 @@ jobs:
       LLVM_CONFIG: n
       ENABLE_KERNELSU: true
       KERNELSU_TAG: main
-      KERNEL_LOCALVERSION: -mikasa
+      KERNEL_LOCALVERSION: -perf
     
     steps:
     - uses: actions/checkout@v3
@@ -133,6 +133,16 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             KCFLAGS="-Wno-unused-function -Wno-error"
+
+    - name: 验证内核版本 (Check Vermagic)
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        echo ">>> 编译完成的内核版本字符串为："
+        grep -a "Linux version" out/arch/arm64/boot/Image.gz-dtb | head -n 1 || true
+        # 也可以从 include/config/kernel.release 中读取
+        if [ -f out/include/config/kernel.release ]; then
+            echo ">>> release 版本: $(cat out/include/config/kernel.release)"
+        fi
                 
     - name: 准备打包内核
       run: |
