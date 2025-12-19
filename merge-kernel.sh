@@ -19,14 +19,107 @@ if [ "$#" -lt 1 ]; then
     echo "用法:"
     echo "  $0 verify <原厂kernel> <原厂kernel-dtb>  # 验证原厂文件"
     echo "  $0 merge <自编译Image> <原厂kernel-dtb>  # 拼接内核"
+    echo "  $0 check-version <自编译Image> <原厂kernel>  # 检查版本是否匹配"
     echo ""
     echo "示例:"
     echo "  $0 verify kernel kernel-dtb"
     echo "  $0 merge Image kernel-dtb"
+    echo "  $0 check-version Image kernel"
     exit 1
 fi
 
 ACTION=$1
+
+# 从内核镜像中提取版本字符串
+extract_kernel_version() {
+    local KERNEL_FILE=$1
+    local VERSION=""
+    
+    # 方法1: 使用 strings 搜索 Linux version
+    VERSION=$(strings "$KERNEL_FILE" 2>/dev/null | grep -oE "Linux version [0-9]+\.[0-9]+\.[0-9]+[^ ]*" | head -1)
+    
+    if [ -z "$VERSION" ]; then
+        # 方法2: 搜索更宽松的版本模式
+        VERSION=$(strings "$KERNEL_FILE" 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9._-]+" | head -1)
+    fi
+    
+    echo "$VERSION"
+}
+
+# 检查版本功能
+check_version() {
+    local NEW_IMAGE=$1
+    local STOCK_KERNEL=$2
+    
+    if [ ! -f "$NEW_IMAGE" ]; then
+        echo -e "${RED}错误: 找不到 $NEW_IMAGE${NC}"
+        exit 1
+    fi
+    
+    if [ ! -f "$STOCK_KERNEL" ]; then
+        echo -e "${RED}错误: 找不到 $STOCK_KERNEL${NC}"
+        exit 1
+    fi
+    
+    echo "=== 提取内核版本 ==="
+    echo ""
+    
+    NEW_VERSION=$(extract_kernel_version "$NEW_IMAGE")
+    STOCK_VERSION=$(extract_kernel_version "$STOCK_KERNEL")
+    
+    echo "自编译内核: $NEW_VERSION"
+    echo "原厂内核:   $STOCK_VERSION"
+    echo ""
+    
+    if [ -z "$NEW_VERSION" ]; then
+        echo -e "${YELLOW}⚠ 无法从自编译内核提取版本${NC}"
+    fi
+    
+    if [ -z "$STOCK_VERSION" ]; then
+        echo -e "${YELLOW}⚠ 无法从原厂内核提取版本${NC}"
+    fi
+    
+    if [ -n "$NEW_VERSION" ] && [ -n "$STOCK_VERSION" ]; then
+        # 提取主版本号 (如 5.4.210)
+        NEW_MAIN=$(echo "$NEW_VERSION" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+        STOCK_MAIN=$(echo "$STOCK_VERSION" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+        
+        echo "=== 版本比较 ==="
+        echo "自编译主版本: $NEW_MAIN"
+        echo "原厂主版本:   $STOCK_MAIN"
+        echo ""
+        
+        if [ "$NEW_MAIN" = "$STOCK_MAIN" ]; then
+            echo -e "${GREEN}✓ 主版本号匹配！${NC}"
+            
+            # 检查完整版本
+            if [ "$NEW_VERSION" = "$STOCK_VERSION" ]; then
+                echo -e "${GREEN}✓ 完整版本号完全匹配！WiFi 模块应该能正常加载${NC}"
+            else
+                echo -e "${YELLOW}⚠ 完整版本有差异，WiFi 模块可能无法加载${NC}"
+                echo ""
+                echo "建议: 修改 LOCALVERSION 使版本完全一致"
+                
+                # 提取 localversion
+                STOCK_LOCAL=$(echo "$STOCK_VERSION" | sed "s/Linux version $STOCK_MAIN//")
+                echo "原厂 LOCALVERSION: $STOCK_LOCAL"
+            fi
+        else
+            echo -e "${RED}✗ 主版本号不匹配！${NC}"
+            echo "WiFi 模块肯定无法加载"
+            echo ""
+            echo "你需要找到与原厂版本 ($STOCK_MAIN) 匹配的内核源码"
+        fi
+    fi
+    
+    echo ""
+    echo "=== 详细版本字符串 ==="
+    echo "自编译:"
+    strings "$NEW_IMAGE" 2>/dev/null | grep -E "Linux version|vermagic" | head -3
+    echo ""
+    echo "原厂:"
+    strings "$STOCK_KERNEL" 2>/dev/null | grep -E "Linux version|vermagic" | head -3
+}
 
 # 验证功能
 verify_kernel() {
@@ -185,9 +278,16 @@ case $ACTION in
         fi
         merge_kernel "$2" "$3" "$4"
         ;;
+    check-version)
+        if [ "$#" -lt 3 ]; then
+            echo "用法: $0 check-version <自编译Image> <原厂kernel>"
+            exit 1
+        fi
+        check_version "$2" "$3"
+        ;;
     *)
         echo "未知操作: $ACTION"
-        echo "可用操作: verify, merge"
+        echo "可用操作: verify, merge, check-version"
         exit 1
         ;;
 esac
