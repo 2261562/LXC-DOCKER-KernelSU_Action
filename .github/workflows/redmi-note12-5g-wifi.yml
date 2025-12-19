@@ -30,89 +30,82 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
                      
-    - name: 下载 zyc-clang 编译器 (Clang 18)
+    - name: 下载 Clang 编译器 (Clang 11 - 与原厂一致)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
-        mkdir clang-zyc
-        wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20230903-release/Clang-18.0.0-20230903.tar.gz
-        tar -C clang-zyc/ -zxf Clang-18.0.0-20230903.tar.gz
+        mkdir clang-aosp
+        # 使用 Clang 11.0.5，与原厂 11.0.2 高度兼容
+        wget https://github.com/ZyCromerZ/Clang/releases/download/11.0.5-20210422-release/Clang-11.0.5-20210422.tar.gz
+        tar -xzf Clang-11.0.5-20210422.tar.gz -C clang-aosp
+        rm Clang-11.0.5-20210422.tar.gz
+        echo "Clang 版本:"
+        $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
+    
+    - name: 下载 GCC 交叉编译器
+      run: |
+        cd $GITHUB_WORKSPACE/kernel_workspace
+        # aarch64 GCC (64位)
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
+        # arm GCC (32位)
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
               
     - name: 下载内核源码
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} android-kernel --depth=1
     
-    # --- 核心修复：正确的 GKI 配置合并逻辑 ---
-    - name: ⚙️ 合并配置 (Merge GKI Config)
+    - name: ⚙️ 生成内核配置 (QGKI)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         mkdir -p out
 
-        # 1. 确定 Base Config (通常是 gki_defconfig)
+        # 使用 gki_defconfig + QGKI 片段 (Qualcomm GKI，比普通 GKI 更完整)
         BASE_DEFCONFIG="arch/arm64/configs/gki_defconfig"
         
-        # 2. 确定 Vendor Fragment (厂商片段)
-        # 优先找 moonstone，找不到找 sunstone (红米 Note 12 系列通用)
-        if [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
+        # moonstone = Redmi Note 12 5G
+        # 优先使用 QGKI (Qualcomm GKI)，包含更多高通特定驱动
+        if [ -f arch/arm64/configs/vendor/moonstone_QGKI.config ]; then
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_QGKI.config"
+        elif [ -f arch/arm64/configs/vendor/sunstone_QGKI.config ]; then
+            VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_QGKI.config"
+        elif [ -f arch/arm64/configs/vendor/moonstone_GKI.config ]; then
             VENDOR_FRAGMENT="arch/arm64/configs/vendor/moonstone_GKI.config"
-        elif [ -f arch/arm64/configs/vendor/sunstone_GKI.config ]; then
-            VENDOR_FRAGMENT="arch/arm64/configs/vendor/sunstone_GKI.config"
         else
-            echo "Error: 找不到厂商配置文件 (moonstone_GKI.config 或 sunstone_GKI.config)"
+            echo "Error: 找不到 moonstone 或 sunstone 配置"
+            ls -la arch/arm64/configs/vendor/
             exit 1
         fi
         
-        echo "正在合并: $BASE_DEFCONFIG + $VENDOR_FRAGMENT"
+        echo "=== 合并配置 ==="
+        echo "Base: $BASE_DEFCONFIG"
+        echo "Vendor: $VENDOR_FRAGMENT"
         
-        # 3. 使用内核自带脚本合并
-        # -m: merge only
-        # -O out: 输出到 out 目录 (关键！)
-        # 这样会生成 out/.config
+        # 合并配置
         ./scripts/kconfig/merge_config.sh -m -O out $BASE_DEFCONFIG $VENDOR_FRAGMENT
         
-        # 4. 修复配置 (olddefconfig)
-        # 这一步会根据合并后的 .config 自动处理未定义的选项，防止编译询问
+        # 处理未定义选项
         make O=out ARCH=arm64 olddefconfig
         
-        echo "配置合并完成，检查 out/.config 是否存在："
+        echo "配置生成完成"
         ls -l out/.config
 
-    - name: 修复 Clang 18 编译报错
+    - name: 修复编译兼容性问题
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
         
-        # --- 1. 修复 icnss2 驱动报错 (本次新增) ---
-        # 错误: a function declaration without a prototype is deprecated
-        if [ -f drivers/soc/qcom/icnss2/main.c ]; then
-            # 精准匹配并替换为 (void)
-            sed -i 's/struct icnss_priv \*icnss_get_plat_priv()/struct icnss_priv *icnss_get_plat_priv(void)/g' drivers/soc/qcom/icnss2/main.c
-        fi
-        
-        # --- 2. 修复 sm5602_fg.c 语法错误 ---
+        # 修复 sm5602_fg.c 语法错误
         if [ -f drivers/power/supply/sm5602_fg.c ]; then
             sed -i 's/static old_uisoc = 0;/static int old_uisoc = 0;/g' drivers/power/supply/sm5602_fg.c
         fi
         
-        # --- 3. 修复 Focaltech 触控驱动缺文件 ---
+        # 修复 Focaltech 触控驱动缺文件
         if [ -d drivers/input/touchscreen/FT3519T ]; then
             touch drivers/input/touchscreen/FT3519T/fw_sample.i
             echo "0x00" > drivers/input/touchscreen/FT3519T/fw_sample.i
             sed -i 's|"include/firmware/fw_sample.i"|"fw_sample.i"|g' drivers/input/touchscreen/FT3519T/focaltech_config.h
-            
             mkdir -p drivers/input/touchscreen/FT3519T/include/pramboot
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
-        
-        # --- 4. 关键：全局禁用严格检查 ---
-        # 必须禁用 strict-prototypes，否则几百个旧文件都会报错
-        echo "KBUILD_CFLAGS += -Wno-error=strict-prototypes" >> Makefile
-        echo "KBUILD_CFLAGS += -Wno-error" >> Makefile
-        echo "KBUILD_CFLAGS += -Wno-error=frame-larger-than" >> Makefile
-        echo "KBUILD_CFLAGS += -Wno-error=unused-but-set-variable" >> Makefile
-        echo "KBUILD_CFLAGS += -Wno-error=unused-variable" >> Makefile
-        
-        # --- 5. 放宽栈大小检查 ---
-        find . -name "Makefile" -type f -exec sed -i 's/-Wframe-larger-than=[0-9]\+/-Wframe-larger-than=8192/g' {} \;
 
     - name: 开启 LXC 和 Docker 配置
       if: env.ENABLE_LXC_DOCKER == 'true'
@@ -142,10 +135,16 @@ jobs:
         key: build-kernel-sunstone-merged
         max-size: 2G
 
-    - name: 开始编译内核
+    - name: 开始编译内核 (原厂工具链风格)
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-        export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-zyc/bin:$PATH
+        
+        # 设置工具链路径
+        CLANG_PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin
+        GCC64_PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin
+        GCC32_PATH=$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin
+        
+        export PATH=$CLANG_PATH:$GCC64_PATH:$GCC32_PATH:$PATH
         export KBUILD_BUILD_HOST=Github-Action
         export KBUILD_BUILD_USER=Builder
         
@@ -155,20 +154,18 @@ jobs:
             exit 1
         fi
         
-        # 禁用自动版本后缀，手动指定完整 LOCALVERSION 伪装原厂 vermagic
+        # 使用原厂风格的编译参数 (Clang + GCC binutils 混合模式)
         # 原厂版本: 5.4.191-perf-g584efd44a591
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CC="ccache clang" \
-            CXX=clang++ \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
-            CROSS_COMPILE="aarch64-linux-gnu-" \
-            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            CROSS_COMPILE="aarch64-linux-android-" \
+            CROSS_COMPILE_COMPAT="arm-linux-androideabi-" \
+            CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
             LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
-            LOCALVERSION_AUTO=n \
-            LLVM=1 \
-            LLVM_IAS=1
+            LOCALVERSION_AUTO=n
                 
     - name: 准备打包内核 (AnyKernel3)
       run: |

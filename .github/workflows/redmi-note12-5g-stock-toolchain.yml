@@ -38,42 +38,38 @@ jobs:
         sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
         mkdir -p $GITHUB_WORKSPACE/kernel_workspace
 
-    - name: 下载原厂 Android Clang (r383902b1 - Clang 11.0.2)
+    - name: 下载 Android Clang 工具链
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         mkdir -p android-clang
         
-        # 方案1: 从 Google 官方镜像下载 (推荐)
-        # r383902b1 对应 Android 12 时期的 Clang 11.0.2
-        wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz || {
-          # 方案2: 备用镜像
-          echo "Google 源下载失败，尝试备用镜像..."
-          wget -q https://gitlab.com/AntaresOne/prebuilts_clang_host_linux-x86_clang-r383902b1/-/archive/master/prebuilts_clang_host_linux-x86_clang-r383902b1-master.tar.gz -O clang.tar.gz || {
-            # 方案3: 使用 aosp-clang 项目
-            echo "备用镜像也失败，使用 aosp-clang..."
-            git clone --depth=1 https://gitlab.com/AntaresOne/prebuilts_clang_host_linux-x86_clang-r383902b1.git android-clang
-          }
-        }
+        # 使用 ZyCromerZ 的 AOSP Clang 镜像 (稳定可靠)
+        # Clang 11.0.5 与原厂 11.0.2 高度兼容
+        echo "下载 AOSP Clang 11..."
+        wget -q https://github.com/ZyCromerZ/Clang/releases/download/11.0.5-20210422-release/Clang-11.0.5-20210422.tar.gz -O clang.tar.gz
         
-        # 如果下载了 tar.gz 则解压
-        if [ -f clang.tar.gz ]; then
+        if [ ! -f clang.tar.gz ]; then
+          echo "ZyCromerZ 源失败，尝试 kdrag0n proton-clang..."
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git android-clang
+        else
           tar -xzf clang.tar.gz -C android-clang
           rm clang.tar.gz
         fi
         
         # 验证 clang 版本
         echo "Clang 版本信息:"
-        $GITHUB_WORKSPACE/kernel_workspace/android-clang/bin/clang --version || echo "警告: clang 验证失败"
+        $GITHUB_WORKSPACE/kernel_workspace/android-clang/bin/clang --version
 
-    - name: 下载 GCC 交叉编译器 (原厂配套)
+    - name: 下载 GCC 交叉编译器
       run: |
         cd $GITHUB_WORKSPACE/kernel_workspace
         
+        # 使用 LineageOS 的 GCC 镜像 (更稳定)
         # aarch64 GCC (64位)
-        git clone --depth=1 https://github.com/AntaresOne/aarch64-linux-android-4.9 gcc64
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
         
         # arm GCC (32位，用于 vDSO)
-        git clone --depth=1 https://github.com/AntaresOne/arm-linux-androideabi-4.9 gcc32
+        git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
 
     - name: 下载内核源码 (CodeLinaro msm-5.4)
       run: |
@@ -188,12 +184,14 @@ jobs:
         
         # 使用原厂风格的编译参数
         # 原厂使用 Clang + GCC binutils 混合模式
+        # LineageOS GCC 路径前缀
         make -j$(nproc --all) \
             O=out \
             ARCH=arm64 \
             CC="ccache clang" \
             CLANG_TRIPLE="aarch64-linux-gnu-" \
             CROSS_COMPILE="aarch64-linux-android-" \
+            CROSS_COMPILE_COMPAT="arm-linux-androideabi-" \
             CROSS_COMPILE_ARM32="arm-linux-androideabi-" \
             LOCALVERSION="${{ env.KERNEL_LOCALVERSION }}" \
             LOCALVERSION_AUTO=n
