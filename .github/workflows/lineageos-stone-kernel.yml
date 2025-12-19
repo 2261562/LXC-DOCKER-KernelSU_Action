@@ -1,0 +1,179 @@
+name: Redmi Note12 5G LineageOS Stone Kernel (Docker Support)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build LineageOS Kernel for Stone
+    runs-on: ubuntu-latest
+    env:
+      KERNEL_SOURCE: https://github.com/baunilla/android_device_xiaomi_stone-kernel
+      KERNEL_SOURCE_BRANCH: lineage-22
+      KERNEL_ZIP_NAME: stone_lineageos_docker-kernel_20251219
+      KERNEL_IMAGE_NAME: Image
+      ENABLE_KERNELSU: false
+      ENABLE_LXC_DOCKER: true
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: 构建编译环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python-is-python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+    - name: 下载 Clang 工具链
+      run: |
+        mkdir -p $GITHUB_WORKSPACE/toolchain
+        cd $GITHUB_WORKSPACE/toolchain
+        
+        # 使用 Proton Clang (稳定且兼容性好)
+        git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+        
+        echo "Clang 版本:"
+        ./clang/bin/clang --version
+
+    - name: 下载内核源码
+      run: |
+        git clone ${{ env.KERNEL_SOURCE }} -b ${{ env.KERNEL_SOURCE_BRANCH }} --depth=1 $GITHUB_WORKSPACE/kernel || \
+        git clone ${{ env.KERNEL_SOURCE }} --depth=1 $GITHUB_WORKSPACE/kernel
+        
+        cd $GITHUB_WORKSPACE/kernel
+        echo "当前分支和 commit:"
+        git branch -a
+        git log -1 --oneline
+        
+        echo ""
+        echo "=== 仓库结构 ==="
+        ls -la
+        
+        echo ""
+        echo "=== arch/arm64/configs 目录 ==="
+        ls -la arch/arm64/configs/ 2>/dev/null || echo "目录不存在"
+        
+        echo ""
+        echo "=== 查找 defconfig 文件 ==="
+        find . -name "*defconfig*" -o -name "*.config" 2>/dev/null | head -20
+
+    - name: 生成内核配置
+      run: |
+        cd $GITHUB_WORKSPACE/kernel
+        
+        export PATH=$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        
+        mkdir -p out
+        
+        # 尝试多种 defconfig
+        DEFCONFIG=""
+        
+        # 检查常见的 defconfig 名称
+        for config in stone_defconfig sunstone_defconfig vendor/stone_defconfig vendor/sunstone_defconfig lineage_stone_defconfig gki_defconfig defconfig; do
+          if [ -f "arch/arm64/configs/$config" ]; then
+            DEFCONFIG=$config
+            echo "找到 defconfig: $config"
+            break
+          fi
+        done
+        
+        if [ -z "$DEFCONFIG" ]; then
+          echo "=== 列出所有可用的 defconfig ==="
+          ls -la arch/arm64/configs/
+          echo ""
+          echo "Error: 未找到合适的 defconfig，请检查上面的列表"
+          exit 1
+        fi
+        
+        echo "使用 defconfig: $DEFCONFIG"
+        
+        make O=out \
+          ARCH=arm64 \
+          CC=clang \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          $DEFCONFIG
+        
+        echo "配置生成完成"
+
+    - name: 开启 LXC 和 Docker 配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        chmod +x $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
+        $GITHUB_WORKSPACE/add-lxc-docker-custom.sh $GITHUB_WORKSPACE/kernel/out/.config
+        
+        echo "=== 验证 Docker 相关配置 ==="
+        grep -E "CONFIG_NAMESPACES|CONFIG_CGROUPS|CONFIG_VETH|CONFIG_BRIDGE" $GITHUB_WORKSPACE/kernel/out/.config | head -10
+
+    - name: 配置 KernelSU
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        cd $GITHUB_WORKSPACE/kernel
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+
+    - name: 设置 ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: lineageos-stone-kernel
+        max-size: 2G
+
+    - name: 编译内核
+      run: |
+        cd $GITHUB_WORKSPACE/kernel
+        
+        export PATH=$GITHUB_WORKSPACE/toolchain/clang/bin:$PATH
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export KBUILD_BUILD_HOST=Github-Action
+        export KBUILD_BUILD_USER=Builder
+        
+        make -j$(nproc --all) \
+          O=out \
+          ARCH=arm64 \
+          CC="ccache clang" \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          LLVM=1 \
+          LLVM_IAS=1
+        
+        echo ""
+        echo "=== 检查编译产物 ==="
+        ls -la out/arch/arm64/boot/ 2>/dev/null || echo "boot 目录不存在"
+
+    - name: 打包内核 (AnyKernel3)
+      run: |
+        cd $GITHUB_WORKSPACE
+        git clone https://github.com/osm0sis/AnyKernel3 --depth=1
+        
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+        
+        # 复制内核镜像
+        if [ -f kernel/out/arch/arm64/boot/Image ]; then
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+        elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+          cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+        else
+          echo "Error: 未找到内核镜像"
+          ls -la kernel/out/arch/arm64/boot/
+          exit 1
+        fi
+        
+        # 复制 dtbo (如果存在)
+        if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
+          cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+        fi
+        
+        # 配置 AnyKernel3
+        cd AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
+        sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
+        
+        zip -r9 ../kernel-output.zip * -x .git README.md
+
+    - name: 上传内核
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        path: kernel-output.zip
