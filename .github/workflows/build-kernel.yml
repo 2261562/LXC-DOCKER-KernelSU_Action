@@ -1,4 +1,4 @@
-name: Build Kernel (Fix Linker Error)
+name: Build Kernel (Fix EL3 Error)
 
 on:
   workflow_dispatch:
@@ -6,15 +6,10 @@ on:
 
 env:
   # ================= 硬编码配置区域 =================
-  # 源码仓库
   KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
-  # 分支
   KERNEL_BRANCH: 'lineage-21'
-  # 默认配置名
   KERNEL_DEFCONFIG: 'moonstone_defconfig'
-  # 镜像名
   KERNEL_IMAGE_NAME: 'Image'
-  # 构建用户
   KBUILD_BUILD_USER: 'DockerBuilder'
   KBUILD_BUILD_HOST: 'GitHub-Action'
   # =================================================
@@ -27,16 +22,14 @@ jobs:
       image: ubuntu:22.04
 
     steps:
-      - name: 初始化编译环境 (含修复)
+      - name: 初始化编译环境
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update && apt-get upgrade -y
           ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           apt-get install -y tzdata
-          
-          # 关键修复：添加 lld 到安装列表
-          apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget lld
-          
+          # 安装依赖 (保留 lld 以防万一，但主要使用 binutils)
+          apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget lld binutils-aarch64-linux-gnu
           ln -sf /usr/bin/python3 /usr/bin/python
 
       - name: 拉取内核源码
@@ -50,40 +43,27 @@ jobs:
           echo "Downloading Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
           
-          # === 关键修复开始 ===
-          # 移除 Proton Clang 自带的旧版链接器 (与 Ubuntu 22.04 glibc 不兼容)
+          # 修复: 移除 clang 自带的 ld，强制使用系统或交叉编译工具链的 ld
           rm -f clang/bin/ld clang/bin/ld.lld
-          
-          # 将 Proton Clang 的链接器指向系统的 ld 和 lld
-          # 这样既解决了找不到 ld.lld 的问题，也解决了 glibc 版本报错
-          ln -s /usr/bin/ld clang/bin/ld
-          ln -s /usr/bin/ld.lld clang/bin/ld.lld
-          # === 关键修复结束 ===
+          # 我们稍后会在 make 命令中显式指定使用 GNU ld
 
       - name: 🔍 智能检测 Defconfig
         run: |
           cd kernel_workspace
-          
           CONFIG_PATH="arch/arm64/configs"
           VENDOR_PATH="arch/arm64/configs/vendor"
           
           if [ -f "$VENDOR_PATH/moonstone_defconfig" ]; then
-              echo "Found: vendor/moonstone_defconfig"
               echo "TARGET_DEFCONFIG=vendor/moonstone_defconfig" >> $GITHUB_ENV
           elif [ -f "$CONFIG_PATH/moonstone_defconfig" ]; then
-              echo "Found: moonstone_defconfig"
               echo "TARGET_DEFCONFIG=moonstone_defconfig" >> $GITHUB_ENV
           elif [ -f "$VENDOR_PATH/sunstone_defconfig" ]; then
-              echo "Found: vendor/sunstone_defconfig"
               echo "TARGET_DEFCONFIG=vendor/sunstone_defconfig" >> $GITHUB_ENV
           elif [ -f "$CONFIG_PATH/sunstone_defconfig" ]; then
-              echo "Found: sunstone_defconfig"
               echo "TARGET_DEFCONFIG=sunstone_defconfig" >> $GITHUB_ENV
           elif [ -f "$VENDOR_PATH/holi_defconfig" ]; then
-               echo "Found: vendor/holi_defconfig"
                echo "TARGET_DEFCONFIG=vendor/holi_defconfig" >> $GITHUB_ENV
           else
-              echo "::warning::Could not auto-detect config. Falling back to env: ${{ env.KERNEL_DEFCONFIG }}"
               echo "TARGET_DEFCONFIG=${{ env.KERNEL_DEFCONFIG }}" >> $GITHUB_ENV
           fi
 
@@ -95,9 +75,17 @@ jobs:
           CONFIG_FILE="$1"
           if [ ! -f "$CONFIG_FILE" ]; then echo "Error: Config file not found!"; exit 1; fi
           echo "Injecting LXC/Docker configs into $CONFIG_FILE..."
-          cat << CFG >> "$CONFIG_FILE"
           
-          # === Docker/LXC Support ===
+          # 1. 禁用 LTO 以修复 EL3 汇编错误
+          # 这一步非常关键！
+          sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' "$CONFIG_FILE"
+          sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' "$CONFIG_FILE"
+          sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' "$CONFIG_FILE"
+          echo "CONFIG_LTO_NONE=y" >> "$CONFIG_FILE"
+          
+          # 2. 注入 Docker 配置
+          cat << CFG >> "$CONFIG_FILE"
+          # Docker/LXC Support
           CONFIG_NAMESPACES=y
           CONFIG_NET_NS=y
           CONFIG_PID_NS=y
@@ -122,8 +110,6 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
           CONFIG_NETFILTER_XT_MATCH_IPVS=y
           CONFIG_IP_VS=y
-          CONFIG_IP_VS_NFCT=y
-          CONFIG_IP_VS_RR=y
           CONFIG_OVERLAY_FS=y
           CONFIG_POSIX_MQUEUE=y
           CONFIG_SECCOMP=y
@@ -142,25 +128,29 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           
+          # 显式指定使用 GNU ld (aarch64-linux-gnu-ld) 而非 lld
+          # 这可以避免 EL3 汇编指令检查错误
+          export LD=aarch64-linux-gnu-ld
+          
           echo "Using Config: ${{ env.TARGET_DEFCONFIG }}"
           
           # 1. 生成基础配置
-          # 显式指定 LD=ld.lld 以确保配置阶段也能通过检查
-          make O=out CC=clang LD=ld.lld ${{ env.TARGET_DEFCONFIG }}
+          make O=out CC=clang ${{ env.TARGET_DEFCONFIG }}
           
-          # 2. 注入 Docker 支持
+          # 2. 注入 Docker 支持 & 禁用 LTO
           ./enable_docker.sh out/.config
           
           # 3. 整理配置
-          make O=out CC=clang LD=ld.lld olddefconfig
+          make O=out CC=clang olddefconfig
           
           # 4. 编译
+          # 注意：这里移除了 LD=ld.lld 参数，让构建系统使用环境中的 GNU ld
           make -j$(nproc --all) O=out \
             CC="ccache clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             Image dtbs
 
       - name: 打包 (AnyKernel3)
