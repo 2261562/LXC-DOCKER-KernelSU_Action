@@ -134,6 +134,9 @@ jobs:
         if [ -f techpack/audio/soc/pinctrl-lpi.c ]; then
             echo "=== 修复 techpack/audio 缺失头文件 ==="
             
+            # 清理可能存在的旧文件或悬空符号链接
+            rm -f techpack/audio/soc/pinctrl-utils.h
+            
             # 首先在可能的标准位置查找 pinctrl-utils.h
             # 排除 techpack/audio/soc 自身,只在 drivers 和 include 目录查找
             PINCTRL_UTILS=""
