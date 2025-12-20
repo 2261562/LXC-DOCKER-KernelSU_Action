@@ -1,208 +1,190 @@
-name: Build Kernel
+name: Build Kernel (Auto-Detect Config & Docker)
 
 on:
   workflow_dispatch:
-    inputs:
-      KERNEL_SOURCE:
-        description: 'Kernel source repository'
-        required: true
-        default: 'https://github.com/hcysahaaa1213/android_kernel_xiaomi_sunstone'
-      KERNEL_BRANCH:
-        description: 'Kernel branch'
-        required: true
-        default: 'lineage-21'
-      DEFCONFIG:
-        description: 'Defconfig file name'
-        required: true
-        default: 'sunstone_defconfig'
-      ENABLE_LXC_DOCKER:
-        description: 'Enable LXC/Docker support'
-        required: true
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-      ENABLE_KERNELSU:
-        description: 'Enable KernelSU'
-        required: true
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-      KERNELSU_TAG:
-        description: 'KernelSU version tag'
-        required: false
-        default: 'v0.9.5'
-      KERNEL_LOCALVERSION:
-        description: 'Kernel local version string'
-        required: false
-        default: '-sunstone'
+    # 移除输入框，点击即运行
+
+env:
+  # ================= 硬编码配置区域 =================
+  # 源码仓库
+  KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
+  # 分支 (LineageOS 21/Android 14)
+  KERNEL_BRANCH: 'lineage-21'
+  # 默认尝试的配置名 (如果找不到，脚本会自动搜索替代品)
+  KERNEL_DEFCONFIG: 'moonstone_defconfig'
+  # 镜像名
+  KERNEL_IMAGE_NAME: 'Image'
+  # 你的名字
+  KBUILD_BUILD_USER: 'DockerBuilder'
+  KBUILD_BUILD_HOST: 'GitHub-Action'
+  # =================================================
 
 jobs:
   build:
     name: Build Kernel
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    container:
+      image: ubuntu:22.04
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 8192
-          swap-size-mb: 8192
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-
-      - name: Setup build environment
+      - name: 初始化编译环境
         run: |
-          sudo apt-get update
-          sudo apt-get install -y git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 python-is-python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi libncurses-dev
+          apt-get update && apt-get upgrade -y
+          apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget
+          ln -sf /usr/bin/python3 /usr/bin/python
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: build-kernel-sunstone
-          max-size: 2G
-
-      - name: Download Clang toolchain (Proton Clang)
+      - name: 拉取内核源码
         run: |
-          mkdir -p $GITHUB_WORKSPACE/toolchain
-          cd $GITHUB_WORKSPACE/toolchain
+          echo "Cloning branch: ${{ env.KERNEL_BRANCH }}"
+          git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_SOURCE }} kernel_workspace
+
+      - name: 拉取工具链 (Proton Clang)
+        run: |
+          cd kernel_workspace
+          echo "Downloading Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
-          
-          # Fix: Remove proton-clang ld to avoid glibc incompatibility
           rm -f clang/bin/ld clang/bin/ld.lld
           ln -s /usr/bin/ld clang/bin/ld
+
+      - name: 🔍 智能检测 Defconfig (关键修复)
+        run: |
+          cd kernel_workspace
+          echo "Looking for config file..."
           
-          echo "Clang version:"
-          clang/bin/clang --version
-
-      - name: Download GCC toolchains
-        run: |
-          cd $GITHUB_WORKSPACE/toolchain
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 gcc32
-
-      - name: Clone kernel source
-        run: |
-          git clone --depth=1 -b ${{ github.event.inputs.KERNEL_BRANCH }} ${{ github.event.inputs.KERNEL_SOURCE }} kernel
-
-      - name: Setup KernelSU
-        if: github.event.inputs.ENABLE_KERNELSU == 'true'
-        run: |
-          cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ github.event.inputs.KERNELSU_TAG }}
-
-      - name: Generate kernel config
-        run: |
-          cd kernel
-          mkdir -p out
+          # 定义查找路径
+          CONFIG_PATH="arch/arm64/configs"
+          VENDOR_PATH="arch/arm64/configs/vendor"
           
-          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
-          export ARCH=arm64
-          
-          make O=out CC=clang ${{ github.event.inputs.DEFCONFIG }}
+          # 自动寻找逻辑
+          if [ -f "$VENDOR_PATH/moonstone_defconfig" ]; then
+              echo "Found: vendor/moonstone_defconfig"
+              echo "TARGET_DEFCONFIG=vendor/moonstone_defconfig" >> $GITHUB_ENV
+          elif [ -f "$CONFIG_PATH/moonstone_defconfig" ]; then
+              echo "Found: moonstone_defconfig"
+              echo "TARGET_DEFCONFIG=moonstone_defconfig" >> $GITHUB_ENV
+          elif [ -f "$VENDOR_PATH/sunstone_defconfig" ]; then
+              echo "Found: vendor/sunstone_defconfig"
+              echo "TARGET_DEFCONFIG=vendor/sunstone_defconfig" >> $GITHUB_ENV
+          elif [ -f "$CONFIG_PATH/sunstone_defconfig" ]; then
+              echo "Found: sunstone_defconfig"
+              echo "TARGET_DEFCONFIG=sunstone_defconfig" >> $GITHUB_ENV
+          elif [ -f "$VENDOR_PATH/holi_defconfig" ]; then
+               echo "Found: vendor/holi_defconfig (Generic)"
+               echo "TARGET_DEFCONFIG=vendor/holi_defconfig" >> $GITHUB_ENV
+          else
+              echo "::warning::Could not auto-detect config. Falling back to env: ${{ env.KERNEL_DEFCONFIG }}"
+              echo "TARGET_DEFCONFIG=${{ env.KERNEL_DEFCONFIG }}" >> $GITHUB_ENV
+              
+              echo "Listing available configs for debugging:"
+              ls -R arch/arm64/configs/ | grep defconfig | head -n 20
+          fi
 
-      - name: Enable LXC/Docker config
-        if: github.event.inputs.ENABLE_LXC_DOCKER == 'true'
+      - name: ⚙️ 准备 Docker 注入脚本
         run: |
-          chmod +x $GITHUB_WORKSPACE/add-lxc-docker-custom.sh
-          $GITHUB_WORKSPACE/add-lxc-docker-custom.sh kernel/out/.config
+          cd kernel_workspace
+          cat << 'EOF' > enable_docker.sh
+          #!/bin/bash
+          CONFIG_FILE="$1"
+          if [ ! -f "$CONFIG_FILE" ]; then echo "Error: Config file not found!"; exit 1; fi
+          echo "Injecting LXC/Docker configs into $CONFIG_FILE..."
+          cat << CFG >> "$CONFIG_FILE"
           
-          cd kernel
-          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
-          export ARCH=arm64
-          make O=out olddefconfig
+          # === Docker Support ===
+          CONFIG_NAMESPACES=y
+          CONFIG_NET_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_UTS_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_CGROUPS=y
+          CONFIG_CGROUP_CPUACCT=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_CPUSETS=y
+          CONFIG_MEMCG=y
+          CONFIG_BLK_CGROUP=y
+          CONFIG_CGROUP_PIDS=y
+          CONFIG_VETH=y
+          CONFIG_BRIDGE=y
+          CONFIG_BRIDGE_NETFILTER=y
+          CONFIG_IP_NF_FILTER=y
+          CONFIG_IP_NF_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          CONFIG_NETFILTER_XT_MATCH_IPVS=y
+          CONFIG_IP_VS=y
+          CONFIG_IP_VS_NFCT=y
+          CONFIG_IP_VS_RR=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_SECCOMP=y
+          CONFIG_SECCOMP_FILTER=y
+          CONFIG_IPVLAN=y
+          CONFIG_MACVLAN=y
+          CFG
+          echo "Done."
+          EOF
+          chmod +x enable_docker.sh
 
-      - name: Remove .git directory (fix version string)
+      - name: 配置与编译内核
         run: |
-          cd kernel
-          rm -rf .git
-          rm -rf KernelSU/.git 2>/dev/null || true
-
-      - name: Build kernel
-        run: |
-          cd kernel
-          
-          export PATH="${GITHUB_WORKSPACE}/toolchain/clang/bin:${GITHUB_WORKSPACE}/toolchain/gcc64/bin:${GITHUB_WORKSPACE}/toolchain/gcc32/bin:$PATH"
+          cd kernel_workspace
+          export PATH=$(pwd)/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          export KBUILD_BUILD_HOST=Github-Action
-          export KBUILD_BUILD_USER=Builder
-          export HOSTLD=/usr/bin/ld
           
+          echo "Using Config: ${{ env.TARGET_DEFCONFIG }}"
+          
+          # 1. 生成配置
+          make O=out CC=clang ${{ env.TARGET_DEFCONFIG }}
+          
+          # 2. 注入 Docker 支持
+          ./enable_docker.sh out/.config
+          
+          # 3. 整理配置
+          make O=out CC=clang olddefconfig
+          
+          # 4. 编译
           make -j$(nproc --all) O=out \
-            ARCH=arm64 \
             CC="ccache clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            CROSS_COMPILE_COMPAT=arm-linux-androideabi- \
-            HOSTLD=/usr/bin/ld \
-            LOCALVERSION="${{ github.event.inputs.KERNEL_LOCALVERSION }}" \
-            LOCALVERSION_AUTO=n
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
+            Image dtbs
 
-      - name: Package with AnyKernel3
+      - name: 打包 (AnyKernel3)
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          
-          # Clean up
+          cd kernel_workspace
+          git clone https://github.com/osm0sis/AnyKernel3
           rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
           
-          # Copy kernel image
-          if [ -f kernel/out/arch/arm64/boot/Image ]; then
-            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
-          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          elif [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          # 智能查找内核文件
+          if [ -f out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
+              cp out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
+          elif [ -f out/arch/arm64/boot/Image.gz ]; then
+              cp out/arch/arm64/boot/Image.gz AnyKernel3/
           else
-            echo "Error: Kernel image not found!"
-            find kernel/out -name "Image*" -o -name "zImage*" 2>/dev/null
-            exit 1
+              echo "Error: Kernel Image not found!"
+              exit 1
           fi
           
-          # Copy dtbo if exists
-          if [ -f kernel/out/arch/arm64/boot/dtbo.img ]; then
-            cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/
+          if [ -f out/arch/arm64/boot/dtbo.img ]; then
+              cp out/arch/arm64/boot/dtbo.img AnyKernel3/
           fi
-          
-          # Configure AnyKernel3 for Qualcomm device
-          cd AnyKernel3
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=/dev/block/bootdevice/by-name/boot;|g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/is_slot_device=0/is_slot_device=auto/g' anykernel.sh
-          
-          # Create flashable zip
-          zip -r9 ../kernel-sunstone-lxc.zip * -x .git README.md
+          find out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cp {} AnyKernel3/dtb \; 2>/dev/null || true
 
-      - name: Upload kernel artifact
+          cd AnyKernel3
+          sed -i 's/device.name1=/device.name1=sunstone/g' anykernel.sh
+          sed -i 's/device.name2=/device.name2=moonstone/g' anykernel.sh
+          sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
+          sed -i 's/kernel.string=zImage/kernel.string=Image/g' anykernel.sh
+          
+          zip -r9 ../Kernel-Sunstone-Docker.zip * -x .git README.md *placeholder
+
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-sunstone-${{ github.run_id }}
-          path: kernel-sunstone-lxc.zip
-          if-no-files-found: error
-
-      - name: Create release
-        if: success()
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: kernel-${{ github.run_id }}
-          name: Sunstone Kernel Build ${{ github.run_id }}
-          body: |
-            Kernel built from: ${{ github.event.inputs.KERNEL_SOURCE }}
-            Branch: ${{ github.event.inputs.KERNEL_BRANCH }}
-            Defconfig: ${{ github.event.inputs.DEFCONFIG }}
-            LXC/Docker: ${{ github.event.inputs.ENABLE_LXC_DOCKER }}
-            KernelSU: ${{ github.event.inputs.ENABLE_KERNELSU }}
-          files: kernel-sunstone-lxc.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Kernel-Sunstone-Docker
+          path: kernel_workspace/Kernel-Sunstone-Docker.zip
