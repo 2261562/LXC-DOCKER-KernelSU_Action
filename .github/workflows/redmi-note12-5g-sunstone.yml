@@ -130,6 +130,44 @@ jobs:
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
         
+        # 修复 techpack/audio 缺失 pinctrl-utils.h 头文件
+        if [ -f techpack/audio/soc/pinctrl-lpi.c ]; then
+            echo "=== 修复 techpack/audio 缺失头文件 ==="
+            
+            # 方案1: 查找系统中是否存在 pinctrl-utils.h
+            PINCTRL_UTILS=$(find . -name "pinctrl-utils.h" 2>/dev/null | head -n 1)
+            
+            if [ -n "$PINCTRL_UTILS" ]; then
+                echo "找到 pinctrl-utils.h: $PINCTRL_UTILS"
+                # 创建符号链接
+                ln -sf "$(realpath $PINCTRL_UTILS)" techpack/audio/soc/pinctrl-utils.h
+            else
+                echo "未找到 pinctrl-utils.h, 尝试从标准内核路径获取..."
+                
+                # 检查是否存在于 drivers/pinctrl
+                if [ -f drivers/pinctrl/pinctrl-utils.h ]; then
+                    cp drivers/pinctrl/pinctrl-utils.h techpack/audio/soc/
+                elif [ -f include/linux/pinctrl/pinctrl-utils.h ]; then
+                    cp include/linux/pinctrl/pinctrl-utils.h techpack/audio/soc/
+                else
+                    # 方案2: 创建一个最小化的桩文件
+                    echo "创建最小化的 pinctrl-utils.h 桩文件..."
+                    echo '/* Minimal pinctrl-utils.h stub */' > techpack/audio/soc/pinctrl-utils.h
+                    echo '#ifndef __PINCTRL_UTILS_H__' >> techpack/audio/soc/pinctrl-utils.h
+                    echo '#define __PINCTRL_UTILS_H__' >> techpack/audio/soc/pinctrl-utils.h
+                    echo '#include <linux/pinctrl/pinctrl.h>' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'struct pinctrl_map;' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'int pinctrl_utils_reserve_map(struct pinctrl_dev *pctldev, struct pinctrl_map **map, unsigned *reserved_maps, unsigned *num_maps, unsigned reserve);' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'int pinctrl_utils_add_map_mux(struct pinctrl_dev *pctldev, struct pinctrl_map **map, unsigned *reserved_maps, unsigned *num_maps, const char *group, const char *function);' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'int pinctrl_utils_add_map_configs(struct pinctrl_dev *pctldev, struct pinctrl_map **map, unsigned *reserved_maps, unsigned *num_maps, const char *group, unsigned long *configs, unsigned num_configs, enum pinctrl_map_type type);' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'int pinctrl_utils_add_config(struct pinctrl_dev *pctldev, unsigned long **configs, unsigned *num_configs, unsigned long config);' >> techpack/audio/soc/pinctrl-utils.h
+                    echo 'void pinctrl_utils_free_map(struct pinctrl_dev *pctldev, struct pinctrl_map *map, unsigned num_maps);' >> techpack/audio/soc/pinctrl-utils.h
+                    echo '#endif' >> techpack/audio/soc/pinctrl-utils.h
+                    echo "已创建桩文件: techpack/audio/soc/pinctrl-utils.h"
+                fi
+            fi
+        fi
+        
         # 修复 mm/page_alloc.c 返回值缺失错误
         if [ -f mm/page_alloc.c ]; then
             echo "=== 修复 mm/page_alloc.c 返回值问题 ==="
