@@ -1,16 +1,16 @@
-name: Build Kernel (Auto-Detect Config & Docker)
+name: Build Kernel (Fixed Timezone & Docker)
 
 on:
   workflow_dispatch:
-    # 移除输入框，点击即运行
+    # 点击即运行，无输入
 
 env:
   # ================= 硬编码配置区域 =================
   # 源码仓库
   KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
-  # 分支 (LineageOS 21/Android 14)
+  # 分支 (LineageOS 21)
   KERNEL_BRANCH: 'lineage-21'
-  # 默认尝试的配置名 (如果找不到，脚本会自动搜索替代品)
+  # 默认配置名 (脚本会自动检测 vendor/moonstone_defconfig 等)
   KERNEL_DEFCONFIG: 'moonstone_defconfig'
   # 镜像名
   KERNEL_IMAGE_NAME: 'Image'
@@ -27,9 +27,17 @@ jobs:
       image: ubuntu:22.04
 
     steps:
-      - name: 初始化编译环境
+      - name: 初始化编译环境 (修复时区卡顿)
         run: |
+          # 关键修复：设置非交互模式，防止 tzdata 弹出选择框卡住构建
+          export DEBIAN_FRONTEND=noninteractive
+          
           apt-get update && apt-get upgrade -y
+          # 安装 tzdata 时指定默认时区，避免交互
+          ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+          apt-get install -y tzdata
+          
+          # 安装其他依赖
           apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget
           ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -46,16 +54,14 @@ jobs:
           rm -f clang/bin/ld clang/bin/ld.lld
           ln -s /usr/bin/ld clang/bin/ld
 
-      - name: 🔍 智能检测 Defconfig (关键修复)
+      - name: 🔍 智能检测 Defconfig
         run: |
           cd kernel_workspace
-          echo "Looking for config file..."
           
-          # 定义查找路径
           CONFIG_PATH="arch/arm64/configs"
           VENDOR_PATH="arch/arm64/configs/vendor"
           
-          # 自动寻找逻辑
+          # 自动寻找存在的配置文件，防止写错路径
           if [ -f "$VENDOR_PATH/moonstone_defconfig" ]; then
               echo "Found: vendor/moonstone_defconfig"
               echo "TARGET_DEFCONFIG=vendor/moonstone_defconfig" >> $GITHUB_ENV
@@ -69,19 +75,17 @@ jobs:
               echo "Found: sunstone_defconfig"
               echo "TARGET_DEFCONFIG=sunstone_defconfig" >> $GITHUB_ENV
           elif [ -f "$VENDOR_PATH/holi_defconfig" ]; then
-               echo "Found: vendor/holi_defconfig (Generic)"
+               echo "Found: vendor/holi_defconfig"
                echo "TARGET_DEFCONFIG=vendor/holi_defconfig" >> $GITHUB_ENV
           else
               echo "::warning::Could not auto-detect config. Falling back to env: ${{ env.KERNEL_DEFCONFIG }}"
               echo "TARGET_DEFCONFIG=${{ env.KERNEL_DEFCONFIG }}" >> $GITHUB_ENV
-              
-              echo "Listing available configs for debugging:"
-              ls -R arch/arm64/configs/ | grep defconfig | head -n 20
           fi
 
       - name: ⚙️ 准备 Docker 注入脚本
         run: |
           cd kernel_workspace
+          # 生成开启 Docker 支持的脚本
           cat << 'EOF' > enable_docker.sh
           #!/bin/bash
           CONFIG_FILE="$1"
@@ -89,7 +93,7 @@ jobs:
           echo "Injecting LXC/Docker configs into $CONFIG_FILE..."
           cat << CFG >> "$CONFIG_FILE"
           
-          # === Docker Support ===
+          # === Docker/LXC Support ===
           CONFIG_NAMESPACES=y
           CONFIG_NET_NS=y
           CONFIG_PID_NS=y
@@ -136,7 +140,7 @@ jobs:
           
           echo "Using Config: ${{ env.TARGET_DEFCONFIG }}"
           
-          # 1. 生成配置
+          # 1. 生成基础配置
           make O=out CC=clang ${{ env.TARGET_DEFCONFIG }}
           
           # 2. 注入 Docker 支持
