@@ -1,4 +1,4 @@
-name: Build Kernel (Fix EL3 Error)
+name: Build Kernel (Fix Device Check)
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ env:
   # ================= 硬编码配置区域 =================
   KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
   KERNEL_BRANCH: 'lineage-21'
+  # 智能检测会覆盖此配置，但保留作为备选
   KERNEL_DEFCONFIG: 'moonstone_defconfig'
   KERNEL_IMAGE_NAME: 'Image'
   KBUILD_BUILD_USER: 'DockerBuilder'
@@ -28,7 +29,7 @@ jobs:
           apt-get update && apt-get upgrade -y
           ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           apt-get install -y tzdata
-          # 安装依赖 (保留 lld 以防万一，但主要使用 binutils)
+          # 包含 binutils-aarch64-linux-gnu 以确保有 GNU ld
           apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget lld binutils-aarch64-linux-gnu
           ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -43,9 +44,8 @@ jobs:
           echo "Downloading Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
           
-          # 修复: 移除 clang 自带的 ld，强制使用系统或交叉编译工具链的 ld
+          # 修复: 移除 clang 自带的 ld
           rm -f clang/bin/ld clang/bin/ld.lld
-          # 我们稍后会在 make 命令中显式指定使用 GNU ld
 
       - name: 🔍 智能检测 Defconfig
         run: |
@@ -76,8 +76,7 @@ jobs:
           if [ ! -f "$CONFIG_FILE" ]; then echo "Error: Config file not found!"; exit 1; fi
           echo "Injecting LXC/Docker configs into $CONFIG_FILE..."
           
-          # 1. 禁用 LTO 以修复 EL3 汇编错误
-          # 这一步非常关键！
+          # 1. 禁用 LTO (防止 EL3 错误)
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' "$CONFIG_FILE"
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' "$CONFIG_FILE"
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' "$CONFIG_FILE"
@@ -85,7 +84,6 @@ jobs:
           
           # 2. 注入 Docker 配置
           cat << CFG >> "$CONFIG_FILE"
-          # Docker/LXC Support
           CONFIG_NAMESPACES=y
           CONFIG_NET_NS=y
           CONFIG_PID_NS=y
@@ -127,24 +125,16 @@ jobs:
           export PATH=$(pwd)/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          
-          # 显式指定使用 GNU ld (aarch64-linux-gnu-ld) 而非 lld
-          # 这可以避免 EL3 汇编指令检查错误
+          # 使用 GNU ld
           export LD=aarch64-linux-gnu-ld
           
           echo "Using Config: ${{ env.TARGET_DEFCONFIG }}"
           
-          # 1. 生成基础配置
           make O=out CC=clang ${{ env.TARGET_DEFCONFIG }}
-          
-          # 2. 注入 Docker 支持 & 禁用 LTO
           ./enable_docker.sh out/.config
-          
-          # 3. 整理配置
           make O=out CC=clang olddefconfig
           
-          # 4. 编译
-          # 注意：这里移除了 LD=ld.lld 参数，让构建系统使用环境中的 GNU ld
+          # 编译
           make -j$(nproc --all) O=out \
             CC="ccache clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -153,7 +143,7 @@ jobs:
             AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip \
             Image dtbs
 
-      - name: 打包 (AnyKernel3)
+      - name: 打包 (AnyKernel3 - 修复版)
         run: |
           cd kernel_workspace
           git clone https://github.com/osm0sis/AnyKernel3
@@ -174,8 +164,17 @@ jobs:
           find out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cp {} AnyKernel3/dtb \; 2>/dev/null || true
 
           cd AnyKernel3
-          sed -i 's/device.name1=/device.name1=sunstone/g' anykernel.sh
-          sed -i 's/device.name2=/device.name2=moonstone/g' anykernel.sh
+          # === 关键修复：关闭机型检查 ===
+          # 将 do.devicecheck=1 改为 0
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          
+          # === 关键修复：添加 stone 机型 ===
+          # 虽然关了检查，但为了保险，把 stone 也加进去
+          sed -i 's/device.name1=/device.name1=stone/g' anykernel.sh
+          sed -i 's/device.name2=/device.name2=sunstone/g' anykernel.sh
+          sed -i 's/device.name3=/device.name3=moonstone/g' anykernel.sh
+          
+          # 其他适配配置
           sed -i 's/block=\/dev\/block\/platform\/omap\/omap_hsmmc.0\/by-name\/boot;/block=\/dev\/block\/bootdevice\/by-name\/boot;/g' anykernel.sh
           sed -i 's/kernel.string=zImage/kernel.string=Image/g' anykernel.sh
           
