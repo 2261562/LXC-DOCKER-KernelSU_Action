@@ -179,6 +179,36 @@ jobs:
                 echo '#endif' >> techpack/audio/soc/pinctrl-utils.h
                 echo "已创建桩文件: techpack/audio/soc/pinctrl-utils.h"
             fi
+            
+            # 修复 pinctrl-lpi.c 访问 struct pinctrl_dev 内部成员的问题
+            # 错误: incomplete definition of type 'struct pinctrl_dev'
+            # 原因: pinctrl-lpi.c 需要访问 pctldev->desc, pctldev->dev 等内部字段
+            # 解决: 需要包含 pinctrl 核心的内部头文件
+            
+            echo "=== 修复 pinctrl-lpi.c 结构体访问问题 ==="
+            
+            # 查找 drivers/pinctrl/core.h (包含 struct pinctrl_dev 的完整定义)
+            if [ -f drivers/pinctrl/core.h ]; then
+                echo "找到 drivers/pinctrl/core.h, 在 pinctrl-lpi.c 中添加引用"
+                
+                # 备份文件
+                cp techpack/audio/soc/pinctrl-lpi.c techpack/audio/soc/pinctrl-lpi.c.bak
+                
+                # 在 #include "pinctrl-utils.h" 后添加 core.h 的包含
+                # 需要检查是否已经包含
+                if ! grep -q '#include.*drivers/pinctrl/core.h' techpack/audio/soc/pinctrl-lpi.c; then
+                    # 查找 pinctrl-utils.h 的包含行并在其后添加
+                    sed -i '/"pinctrl-utils.h"/a #include "../../drivers/pinctrl/core.h"' techpack/audio/soc/pinctrl-lpi.c
+                    echo "已在 pinctrl-lpi.c 中添加 core.h 引用"
+                else
+                    echo "core.h 引用已存在,跳过"
+                fi
+            else
+                echo "未找到 drivers/pinctrl/core.h, 尝试复制 core.h 到 techpack/audio/soc/"
+                # 如果 core.h 也不存在,可能需要从标准内核源码获取
+                # 或者创建一个最小化的定义
+                echo "警告: 无法找到 pinctrl core.h, 编译可能仍会失败"
+            fi
         fi
         
         # 修复 mm/page_alloc.c 返回值缺失错误
