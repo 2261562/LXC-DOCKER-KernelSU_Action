@@ -1,20 +1,20 @@
-name: Build Kernel (Fixed Timezone & Docker)
+name: Build Kernel (Fix Linker Error)
 
 on:
   workflow_dispatch:
-    # 点击即运行，无输入
+    # 点击即运行
 
 env:
   # ================= 硬编码配置区域 =================
   # 源码仓库
   KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
-  # 分支 (LineageOS 21)
+  # 分支
   KERNEL_BRANCH: 'lineage-21'
-  # 默认配置名 (脚本会自动检测 vendor/moonstone_defconfig 等)
+  # 默认配置名
   KERNEL_DEFCONFIG: 'moonstone_defconfig'
   # 镜像名
   KERNEL_IMAGE_NAME: 'Image'
-  # 你的名字
+  # 构建用户
   KBUILD_BUILD_USER: 'DockerBuilder'
   KBUILD_BUILD_HOST: 'GitHub-Action'
   # =================================================
@@ -27,18 +27,16 @@ jobs:
       image: ubuntu:22.04
 
     steps:
-      - name: 初始化编译环境 (修复时区卡顿)
+      - name: 初始化编译环境 (含修复)
         run: |
-          # 关键修复：设置非交互模式，防止 tzdata 弹出选择框卡住构建
           export DEBIAN_FRONTEND=noninteractive
-          
           apt-get update && apt-get upgrade -y
-          # 安装 tzdata 时指定默认时区，避免交互
           ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
           apt-get install -y tzdata
           
-          # 安装其他依赖
-          apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget
+          # 关键修复：添加 lld 到安装列表
+          apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev bc python3-pip python3-dev python3-full wget lld
+          
           ln -sf /usr/bin/python3 /usr/bin/python
 
       - name: 拉取内核源码
@@ -51,8 +49,16 @@ jobs:
           cd kernel_workspace
           echo "Downloading Proton Clang..."
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git clang
+          
+          # === 关键修复开始 ===
+          # 移除 Proton Clang 自带的旧版链接器 (与 Ubuntu 22.04 glibc 不兼容)
           rm -f clang/bin/ld clang/bin/ld.lld
+          
+          # 将 Proton Clang 的链接器指向系统的 ld 和 lld
+          # 这样既解决了找不到 ld.lld 的问题，也解决了 glibc 版本报错
           ln -s /usr/bin/ld clang/bin/ld
+          ln -s /usr/bin/ld.lld clang/bin/ld.lld
+          # === 关键修复结束 ===
 
       - name: 🔍 智能检测 Defconfig
         run: |
@@ -61,7 +67,6 @@ jobs:
           CONFIG_PATH="arch/arm64/configs"
           VENDOR_PATH="arch/arm64/configs/vendor"
           
-          # 自动寻找存在的配置文件，防止写错路径
           if [ -f "$VENDOR_PATH/moonstone_defconfig" ]; then
               echo "Found: vendor/moonstone_defconfig"
               echo "TARGET_DEFCONFIG=vendor/moonstone_defconfig" >> $GITHUB_ENV
@@ -85,7 +90,6 @@ jobs:
       - name: ⚙️ 准备 Docker 注入脚本
         run: |
           cd kernel_workspace
-          # 生成开启 Docker 支持的脚本
           cat << 'EOF' > enable_docker.sh
           #!/bin/bash
           CONFIG_FILE="$1"
@@ -141,13 +145,14 @@ jobs:
           echo "Using Config: ${{ env.TARGET_DEFCONFIG }}"
           
           # 1. 生成基础配置
-          make O=out CC=clang ${{ env.TARGET_DEFCONFIG }}
+          # 显式指定 LD=ld.lld 以确保配置阶段也能通过检查
+          make O=out CC=clang LD=ld.lld ${{ env.TARGET_DEFCONFIG }}
           
           # 2. 注入 Docker 支持
           ./enable_docker.sh out/.config
           
           # 3. 整理配置
-          make O=out CC=clang olddefconfig
+          make O=out CC=clang LD=ld.lld olddefconfig
           
           # 4. 编译
           make -j$(nproc --all) O=out \
@@ -164,7 +169,6 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3
           rm -rf AnyKernel3/.git* AnyKernel3/README.md AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
           
-          # 智能查找内核文件
           if [ -f out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} ]; then
               cp out/arch/arm64/boot/${{ env.KERNEL_IMAGE_NAME }} AnyKernel3/
           elif [ -f out/arch/arm64/boot/Image.gz ]; then
