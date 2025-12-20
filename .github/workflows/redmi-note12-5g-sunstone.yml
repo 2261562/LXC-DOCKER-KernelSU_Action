@@ -130,6 +130,13 @@ jobs:
             echo "0x00" > drivers/input/touchscreen/FT3519T/include/pramboot/FT5452J_Pramboot_V4.1_20210427.i
         fi
         
+        # 修复相机驱动 cam_sensor_util.c 未声明标识符错误
+        if [ -f techpack/camera/drivers/cam_sensor_module/cam_sensor_utils/cam_sensor_util.c ]; then
+            echo "=== 修复相机驱动编译错误 ==="
+            chmod +x $GITHUB_WORKSPACE/fix-camera-sensor.sh
+            $GITHUB_WORKSPACE/fix-camera-sensor.sh $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+        fi
+        
         # 修复 techpack/audio 缺失 pinctrl-utils.h 头文件
         if [ -f techpack/audio/soc/pinctrl-lpi.c ]; then
             echo "=== 修复 techpack/audio 缺失头文件 ==="
