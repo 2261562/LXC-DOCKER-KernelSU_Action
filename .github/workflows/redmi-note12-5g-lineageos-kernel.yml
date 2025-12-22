@@ -1,4 +1,4 @@
-name: Build Kernel (Final Docker Fix)
+name: Redmi Note12 5G LineageOS Kernel
 
 on:
   workflow_dispatch:
