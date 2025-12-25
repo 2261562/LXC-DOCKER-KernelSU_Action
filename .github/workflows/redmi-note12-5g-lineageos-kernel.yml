@@ -7,7 +7,7 @@ on:
 env:
   # ================= 硬编码配置区域 =================
   KERNEL_SOURCE: 'https://github.com/xiaomi-sm6375-devs/android_kernel_xiaomi_moonstone'
-  KERNEL_BRANCH: 'lineage-21'
+  KERNEL_BRANCH: 'lineage-22.2'
   KERNEL_DEFCONFIG: 'moonstone_defconfig'
   KERNEL_IMAGE_NAME: 'Image'
   KBUILD_BUILD_USER: 'DockerBuilder'
@@ -70,18 +70,45 @@ jobs:
           #!/bin/bash
           CONFIG_FILE="$1"
           if [ ! -f "$CONFIG_FILE" ]; then echo "Error: Config file not found!"; exit 1; fi
-          echo "Injecting LXC/Docker configs into $CONFIG_FILE..."
-          
-          # 1. 禁用 LTO (防止 EL3 错误)
+          echo "Injecting COMPREHENSIVE Docker configs into $CONFIG_FILE..."
+          # --- 1. 禁用 LTO (保持原样，防止编译报错) ---
           sed -i 's/CONFIG_LTO=y/CONFIG_LTO=n/' "$CONFIG_FILE"
           sed -i 's/CONFIG_LTO_CLANG=y/CONFIG_LTO_CLANG=n/' "$CONFIG_FILE"
           sed -i 's/CONFIG_THINLTO=y/CONFIG_THINLTO=n/' "$CONFIG_FILE"
           echo "CONFIG_LTO_NONE=y" >> "$CONFIG_FILE"
-          
-          # 2. 注入 Docker 配置
+
+          # --- 2. 注入完整 Docker 支持 ---
           cat << CFG >> "$CONFIG_FILE"
+
+          # ==========================================
+          # 核心修复区：解决 WARNING 的关键配置
+          # ==========================================
+
+          # [CPU] 修复: No cpu cfs quota/period/shares support
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_FAIR_GROUP_SCHED=y
+
+          # [Memory] 修复: No memory/swap limit support
+          CONFIG_MEMCG=y
+          CONFIG_MEMCG_SWAP=y
+          CONFIG_MEMCG_SWAP_ENABLED=y
+          CONFIG_MEMCG_KMEM=y
+
+          # [IO] 修复: No io.weight/max support
+          CONFIG_BLK_CGROUP=y
+          CONFIG_BLK_DEV_THROTTLING=y
+          CONFIG_IOSCHED_CFQ=y
+          CONFIG_CFQ_GROUP_IOSCHED=y
+          CONFIG_BFQ_GROUP_IOSCHED=y
+
+          # [CPUSETS] 修复: No cpuset support
+          CONFIG_CPUSETS=y
+          CONFIG_PROC_PID_CPUSET=y
+
+          # ==========================================
+          # 基础功能区：确保 Docker 能跑起来
+          # ==========================================
           
-          # 基础命名空间
           CONFIG_NAMESPACES=y
           CONFIG_NET_NS=y
           CONFIG_PID_NS=y
@@ -89,7 +116,6 @@ jobs:
           CONFIG_UTS_NS=y
           CONFIG_USER_NS=y
           
-          # Cgroups 全家桶 (确保 DEVICE 开启)
           CONFIG_CGROUPS=y
           CONFIG_CGROUP_DEVICE=y
           CONFIG_CGROUP_CPUACCT=y
@@ -100,8 +126,11 @@ jobs:
           CONFIG_BLK_CGROUP=y
           CONFIG_CGROUP_PIDS=y
           CONFIG_CGROUP_BPF=y
+
+          # ==========================================
+          # 网络区：Docker Compose / K8s 必需
+          # ==========================================
           
-          # 网络支持 (Docker Compose 必需)
           CONFIG_VETH=y
           CONFIG_BRIDGE=y
           CONFIG_BRIDGE_NETFILTER=y
@@ -115,15 +144,19 @@ jobs:
           CONFIG_IP_VS_RR=y
           CONFIG_IPVLAN=y
           CONFIG_MACVLAN=y
+          CONFIG_DUMMY=y
           
+          # ==========================================
           # 文件系统与安全
+          # ==========================================
           CONFIG_OVERLAY_FS=y
-          CONFIG_POSIX_MQUEUE=y
+          CONFIG_KEYS=y
           CONFIG_SECCOMP=y
           CONFIG_SECCOMP_FILTER=y
-          CONFIG_KEYS=y
-          
+          CONFIG_POSIX_MQUEUE=y
+
           CFG
+
           echo "Done."
           EOF
           chmod +x enable_docker.sh
